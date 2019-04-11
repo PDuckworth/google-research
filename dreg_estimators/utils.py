@@ -24,11 +24,17 @@ import numpy as np
 import scipy.io
 import tensorflow as tf
 
+from numpy import newaxis
+import tensorflow_probability as tfp
+import model
+
+tfd = tfp.distributions
+
 flags = tf.flags
 
-flags.DEFINE_string("MNIST_LOCATION", "/tmp/mnist",
+flags.DEFINE_string("MNIST_LOCATION", "/home/paul/Datasets/google-research/mnist",
                     "The directory of MNIST datasets.")
-flags.DEFINE_string("OMNIGLOT_LOCATION", "/tmp/omniglot.mat",
+flags.DEFINE_string("OMNIGLOT_LOCATION", "/home/paul/Datasets/google-research/omniglot.mat",
                     "The directory of Omniglot datasets.")
 
 FLAGS = flags.FLAGS
@@ -38,17 +44,16 @@ OMNIGLOT_LOCATION = lambda: FLAGS.OMNIGLOT_LOCATION
 
 
 
-def binarize_batch_xs(batch_xs):
+def binarize_batch_xs(batch_xs, or_not = False):
   """Randomly binarize a batch of data."""
-  return (batch_xs > np.random.random(size=batch_xs.shape)).astype(
-      batch_xs.dtype)
+  if or_not: return batch_xs  # just don't do anything :)
+  return (batch_xs > np.random.random(size=batch_xs.shape)).astype(batch_xs.dtype)
 
 
 def summarize_grads(grads):
   """Summarize the gradient vector."""
   grad_ema = tf.train.ExponentialMovingAverage(decay=0.99)
-  vectorized_grads = tf.concat(
-      [tf.reshape(g, [-1]) for g, _ in grads if g is not None], axis=0)
+  vectorized_grads = tf.concat([tf.reshape(g, [-1]) for g, _ in grads if g is not None], axis=0)
   new_second_moments = tf.square(vectorized_grads)
   new_first_moments = vectorized_grads
   maintain_grad_ema_op = grad_ema.apply([new_first_moments, new_second_moments])
@@ -124,3 +129,42 @@ def load_mnist():
   valid_xs = load_dataset("valid_xs")
 
   return train_xs, valid_xs, test_xs
+
+def load_toy_data(datapoints = 200, dim=1):
+  SEED = 11
+  TRUE_MEAN = 2
+  TRUE_SCALE = 1
+  NUM_DATA_POINTS = 1024*2
+
+  # Create fake data points using a tf distribution
+  # true_distribution = tfp.distributions.Normal(loc=TRUE_MEAN, scale=TRUE_SCALE)
+  # fake_some_samples = true_distribution.sample(NUM_DATA_POINTS, seed=SEED)
+  # fake_data = tf.reshape(fake_some_samples, (NUM_DATA_POINTS,1))
+  # data = tf.placeholder_with_default(fake_data, shape=[NUM_DATA_POINTS,1], name='fake_data')
+
+  # Create fake data points using a np distribution
+  np.random.seed(SEED)
+  data = np.random.normal(loc=TRUE_MEAN, scale=TRUE_SCALE, size=(NUM_DATA_POINTS, 1))
+
+  # Add a new axis so that tf can evaluate the log probability at each data point for many parameter values.
+  train_xs = data[:1024]
+  test_xs = data[:512]
+  valid_xs = data[:512]
+
+  return train_xs, valid_xs, test_xs
+
+def main(unused_argv):
+  with tf.Session() as sess:
+
+    # MNIST dataset
+    train_xs, valid_xs, test_xs = load_mnist()
+    # print(train_xs.shape)
+    # print(train_xs[0])
+
+    # Toy dataset
+    train_xs, valid_xs, test_xs = load_toy_data()
+
+if __name__ == "__main__":
+  tf.app.run(main)
+
+
