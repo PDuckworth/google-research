@@ -31,7 +31,7 @@ from tensorflow.python.training import summary_io
 tfd = tfp.distributions
 flags = tf.flags
 
-flags.DEFINE_enum("estimator", "dreg", [
+flags.DEFINE_enum("estimator", "iwae", [
     "iwae", "rws", "stl", "dreg", "dreg-cv", "rws-dreg", "rws-dreg-norm",
     "dreg-norm", "jk", "jk-dreg", "dreg-alpha"
 ], "Estimator type to use.")
@@ -43,8 +43,10 @@ flags.DEFINE_float("learning_rate", 3e-4, "The learning rate for ADAM.")
 flags.DEFINE_integer("max_steps", int(5e4), "The number of steps to train for.")
 flags.DEFINE_integer("summarize_every", 100,
                      "Number of steps between summaries.")
-flags.DEFINE_string("logdir", "/tmp/dreg",
+flags.DEFINE_string("logdir", "/home/paul/Software/DREG-data/Toy/",
                     "The directory to put summaries and checkpoints.")
+flags.DEFINE_string("subfolder", "",
+                    "Folder name to put summaries and checkpoints in (under logdir).")
 flags.DEFINE_bool("bias_check", False,
                   "Run a bias check instead of training the model.")
 flags.DEFINE_string(
@@ -88,15 +90,6 @@ def main(unused_argv):
   # likelihood_hidden_dims = [0]
 
   with tf.Graph().as_default():
-    # alpha = tf.Variable(0.0, name="alpha_cv")
-    # beta = tf.Variable(0.0, name="beta_cv")
-    # gamma = tf.Variable(0.0, name="gamma_cv")
-    # delta = tf.Variable(0.0, name="delta_cv")
-    # tf.add_to_collection("CONTROL_VARIATES", alpha)
-    # tf.add_to_collection("CONTROL_VARIATES", beta)
-    # tf.add_to_collection("CONTROL_VARIATES", gamma)
-    # tf.add_to_collection("CONTROL_VARIATES", delta)
-
     if FLAGS.dataset in ["mnist", "struct_mnist"]:
       train_xs, valid_xs, test_xs = utils.load_mnist()
     elif FLAGS.dataset == "omniglot":
@@ -109,8 +102,9 @@ def main(unused_argv):
     observations_ph = tf.placeholder("float32", [None, 1])
 
     # set up your prior dist, proposal and likelihood networks
-    (prior, proposal, likelihood) = model.get_toy_models(train_xs, which_example="toy1D")
+    (prior, likelihood, proposal) = model.get_toy_models(train_xs, which_example="toy1D")
 
+    # no parameters in likelihood (decoder) model
     # get_model_params = lambda: likelihood.fcnet.get_variables()  # pylint: disable=unnecessary-lambda
 
     # Compute the lower bound and the loss
@@ -123,9 +117,14 @@ def main(unused_argv):
         contexts=None)
 
     log_p_hat, neg_model_loss, neg_inference_loss = estimators[FLAGS.estimator]
+    elbo = estimators["elbo"]
+
     model_loss = -tf.reduce_mean(neg_model_loss)
     inference_loss = -tf.reduce_mean(neg_inference_loss)
     log_p_hat_mean = tf.reduce_mean(log_p_hat)
+
+    # this is over K samples
+    print("INFERENCE LOSS SHAPE = ", neg_inference_loss.shape)
 
     # model_params = get_model_params()
     inference_network_params = proposal.fcnet.get_variables()
@@ -134,48 +133,48 @@ def main(unused_argv):
     global_step = tf.train.get_or_create_global_step()
     opt = tf.train.AdamOptimizer(FLAGS.learning_rate)
 
-    # gradient of loss wrt parameters
     cv_grads = []
-    # model_grads = opt.compute_gradients(model_loss, var_list=model_params)
+    # inference model (encoder) params are just A and b. (Ax+b)
+
     inference_grads = opt.compute_gradients(inference_loss, var_list=inference_network_params)
+
+    # model_grads = opt.compute_gradients(model_loss, var_list=model_params)
     # grads = model_grads + inference_grads + cv_grads
     grads = inference_grads
 
     # model_ema_op, model_grad_variance, _ = (utils.summarize_grads(model_grads))
+    print("inference grads = ", inference_grads)
     inference_ema_op, inference_grad_variance, inference_grad_snr_sq = (utils.summarize_grads(inference_grads))
 
     # ema_ops = [model_ema_op, inference_ema_op]
     ema_ops = [inference_ema_op]
+    # this ensures you evaluate ema_ops before the apply_gradient function :)
     with tf.control_dependencies(ema_ops):
         train_op = opt.apply_gradients(grads, global_step=global_step)
 
+    # l2_norm = lambda t: tf.sqrt(tf.reduce_sum(tf.pow(t, 2)))
+    # for gradient, variable in inference_grads:
+    #     tf.summary.scalar("phi_grads/" + variable.name, l2_norm(gradient))
+    #     tf.summary.scalar("phi_vars/" + variable.name, l2_norm(variable))
+    #     tf.summary.histogram("phi_grads/" + variable.name, gradient)
+    #     tf.summary.histogram("phi_vars/" + variable.name, variable)
 
-    l2_norm = lambda t: tf.sqrt(tf.reduce_sum(tf.pow(t, 2)))
+    tf.summary.scalar("estimators/elbo", elbo)
+    tf.summary.scalar("estimators/difference", elbo-log_p_hat_mean)
+    # tf.summary.scalar("phi_grad/%s" % FLAGS.estimator, inference_ema_op)
+    tf.summary.scalar("phi_grad_variance/%s" % FLAGS.estimator, inference_grad_variance)
 
-    # for gradient, variable in model_grads:
-    #     tf.summary.scalar("model_grads/" + variable.name, l2_norm(gradient))
-    #     tf.summary.scalar("model_vars/" + variable.name, l2_norm(variable))
-    #     tf.summary.histogram("model_grads/" + variable.name, gradient)
-    #     tf.summary.histogram("model_vars/" + variable.name, variable)
-
-    for gradient, variable in inference_grads:
-        tf.summary.scalar("inference_grads/" + variable.name, l2_norm(gradient))
-        tf.summary.scalar("inference_vars/" + variable.name, l2_norm(variable))
-        tf.summary.histogram("inference_grads/" + variable.name, gradient)
-        tf.summary.histogram("inference_vars/" + variable.name, variable)
-
-
-    #todo: when I only have 1 sample, the gradient variance is not zero :S
     # tf.summary.scalar("model_grad_variance", model_grad_variance)
-    tf.summary.scalar("inference_grad_variance/%s" % FLAGS.estimator, inference_grad_variance)
-    tf.summary.scalar("inference_grad_snr_sq/%s" % FLAGS.estimator, inference_grad_snr_sq)
+    # tf.summary.scalar("inference_grad_snr_sq/%s" % FLAGS.estimator, inference_grad_snr_sq)
 
     tf.summary.scalar("log_p_hat/train", log_p_hat_mean)
 
-    exp_name = "%s.lr-%g.n_samples-%d.alpha-%g.dataset-%s.run-%d" % (
-        FLAGS.estimator, FLAGS.learning_rate, FLAGS.num_samples, FLAGS.alpha,
+    exp_name = "%s.lr-%g.n_samples-%d.batch_size-%d.alpha-%g.dataset-%s.run-%d" % (
+        FLAGS.estimator, FLAGS.learning_rate, FLAGS.num_samples, FLAGS.batch_size, FLAGS.alpha,
         FLAGS.dataset, FLAGS.run)
-    checkpoint_dir = os.path.join(FLAGS.logdir, exp_name)
+    checkpoint_dir = os.path.join(FLAGS.logdir, FLAGS.subfolder, exp_name)
+    print("Checkpoints: : ", checkpoint_dir)
+
     if FLAGS.initial_checkpoint_dir and not tf.gfile.Exists(checkpoint_dir):
       tf.gfile.MakeDirs(checkpoint_dir)
       f = "checkpoint"
@@ -193,9 +192,6 @@ def main(unused_argv):
                 # "model_grad_variance": model_grad_variance,
                 "infer_grad_varaince": inference_grad_variance,
                 "infer_grad_snr_sq": inference_grad_snr_sq,
-
-                #"alpha": alpha,
-                #"beta": beta,
             })
         ],
         checkpoint_dir=checkpoint_dir,
@@ -203,6 +199,7 @@ def main(unused_argv):
         save_summaries_steps=FLAGS.summarize_every,
         # log_step_count_steps=FLAGS.summarize_every * 10
         log_step_count_steps=0,  # disable logging of steps/s to avoid TF warning in validation sets
+        # config=tf.ConfigProto(log_device_placement=True) # spits out the location of each computation (CPU, GPU etc.)
         ) as sess:
 
       writer = summary_io.SummaryWriterCache.get(checkpoint_dir)
@@ -250,10 +247,10 @@ def main(unused_argv):
               sess.run([train_op, global_step, grads], feed_dict={observations_ph: batch_xs})
         # grads_ = sess.run([train_op, global_step, model_params, grads], feed_dict={observations_ph: batch_xs})
 
-        if n_epoch % 100 == 0:
+        if n_epoch % 10 == 0:
           print("epoch #", n_epoch)
           run_eval(cur_step, "test")
-          # run_eval(cur_step, "valid")
+          run_eval(cur_step, "valid")
 
           # var_names = ["theta", "A    ", "b    "]
           var_names = ["A    ", "b    "]

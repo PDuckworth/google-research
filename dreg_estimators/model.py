@@ -166,32 +166,38 @@ class ConditionalNormal(object):
     return tfd.Normal(loc=mu, scale=sigma)
 
 
-class Toy1DMean(object):
-
-  def __init__(self,
-               name="toy_mean"):
+class ToyMean(object):
+  def __init__(self, size =1, name="toy_mean"):
+    self.size = size
     self.name = name
-
   def __call__(self, *args, **kwargs):
     """Creates a normal distribution (conditioned?) on the inputs."""
-    mu = args #self.condition(args)
-    return tfd.Normal(loc=mu, scale=1)
+    return tfd.Normal(loc=args, scale=tf.eye(self.size))
 
 
-class Toy1DNormal(object):
+class ToyPrior(object):
+  def __init__(self, mu = 1, size = 1, name="toy_prior"):
+    self.size = size
+    self.name = name
+    self.mu = mu
+    self.mu = tf.ones(self.size)*self.mu
+    self.fcnet = tfd.Normal(loc = self.mu, scale = tf.eye(self.size))
+  def __call__(self, *args, **kwargs):
+    """Creates a normal distribution"""
+    return tfd.Normal(loc=self.mu, scale=tf.eye(self.size))
+
+
+class ToyNormalproposal(object):
 
   def __init__(self,
                size,
                hidden_layer_sizes,
-               mean_center=None,
-               initializers=None,
                use_bias=True,
                name="toy_normal"):
 
+    self.size = size
     self.name = name
-    self.mean_center = mean_center
     self.fcnet = snt.Linear(output_size=hidden_layer_sizes,
-                            initializers=initializers,
                             use_bias=use_bias,
                             name=name + "_fcnet")
 
@@ -205,7 +211,7 @@ class Toy1DNormal(object):
     fcnet_input_shape = [tf.reduce_prod(raw_input_shape), input_dim]
     fcnet_inputs = tf.reshape(concatted_inputs, fcnet_input_shape)
 
-    print("NETWORK INPUT SHAPE:", fcnet_inputs.shape)
+    print("fcnet_inputs shape:", fcnet_inputs.shape)
     outs = self.fcnet(fcnet_inputs)
 
     # Reshape outputs to the original shape.
@@ -219,12 +225,13 @@ class Toy1DNormal(object):
     """Creates a normal distribution conditioned on the inputs."""
     # mu, sigma = self.condition(args)
     mu = self.condition(args)
+    self.mu = mu
 
     if kwargs.get("stop_gradient", False):
       mu = tf.stop_gradient(mu)
       # sigma = tf.stop_gradient(sigma)
     # return tfd.Normal(loc=mu, scale=sigma)
-    return tfd.Normal(loc=mu, scale=2/3.)
+    return tfd.Normal(loc=mu, scale=tf.eye(self.size)*(2/3.))
 
 
 class Toy20DNormal(object):
@@ -275,46 +282,28 @@ class Toy20DNormal(object):
       sigma = tf.stop_gradient(sigma)
     return tfd.Normal(loc=mu, scale=sigma)
 
-def get_toy_models(train_xs, which_example="toy1D"):
 
-  # if which_example == "SingleStochasticLayer":
-  #   prior_loc = tf.zeros([FLAGS.latent_dim], dtype=tf.float32)
-  #   prior_scale = tf.ones([FLAGS.latent_dim], dtype=tf.float32)
-  #   z_prior = lambda _: tfd.Normal(loc=prior_loc, scale=prior_scale)
-  #
-  #   proposal_hidden_dims, likelihood_hidden_dims = [200, 200], [200, 200]
-  #
-  #   proposal = model.ConditionalNormal(
-  #     size=FLAGS.latent_dim,  # 50
-  #     hidden_layer_sizes=proposal_hidden_dims,  # two layers of 200
-  #     mean_center=mean_xs,
-  #     hidden_activation_fn=tf.nn.tanh)
-  #
-  #   likelihood = model.ConditionalBernoulli(
-  #     784,
-  #     likelihood_hidden_dims,
-  #     bias_init=bias_init,
-  #     hidden_activation_fn=tf.nn.tanh)
-  # # elif which_example == "toy1D":
+def get_toy_models(train_xs, which_example="toy1D"):
 
   if FLAGS.dataset == "toy":
     latent_dim = 1
 
-    prior_loc = tf.zeros(latent_dim, dtype=tf.float32)
-    prior_scale = tf.ones(latent_dim, dtype=tf.float32)
-    # with tf.name_scope('prior') as scope:
-    z_prior = lambda _: tfd.Normal(loc=prior_loc, scale=prior_scale)
+    # prior_loc = tf.zeros(latent_dim, dtype=tf.float32)
+    # prior_scale = tf.ones(latent_dim, dtype=tf.float32)
+    # # with tf.name_scope('prior') as scope:
+
+    z_prior = ToyPrior(mu = 3, size = 1, name="toy_prior")
+
+    likelihood = ToyMean(name="likelihood")
 
     # with tf.name_scope('proposal') as scope:
-    proposal = Toy1DNormal(
+    proposal = ToyNormalproposal(
       size=latent_dim,
       hidden_layer_sizes=1,
       use_bias=True,
       name="proposal")
 
-    likelihood = Toy1DMean(name="likelihood")
-
-  return z_prior, proposal, likelihood
+  return z_prior, likelihood, proposal
 
 
 def iwae(p_z,
@@ -354,44 +343,49 @@ def iwae(p_z,
   # alpha, beta, gamma, delta = cvs
 
   print("OBS SHAPE: ", observations.shape)
-  # batch_size = tf.shape(observations)[0]
-
   proposal = q_z(observations, contexts, stop_gradient=False)
   # [num_samples, batch_size, latent_size]
-
   print("Num SAMPLES: ", FLAGS.num_samples)
   z = proposal.sample(sample_shape=[FLAGS.num_samples])
-  print("SAMPLE SHAPE: ", z.shape)
+
   likelihood = p_x_given_z(z)
+  prior = p_z(contexts)
+  log_p_z = tf.reduce_sum(prior.log_prob(z), axis=-1)
 
   # Before reduce_sum is [num_samples, batch_size, latent_dim].
   # Sum over the latent dim.
   log_q_z = tf.reduce_sum(proposal.log_prob(z), axis=-1)
+
   # Before reduce_sum is  [num_samples, batch_size, latent_dim].
   # Sum over latent dim.
-  prior = p_z(contexts)
-  log_p_z = tf.reduce_sum(prior.log_prob(z), axis=-1)
-  # Before reduce_sum is [num_samples, batch_size, data_dim]
   log_p_x_given_z = tf.reduce_sum(likelihood.log_prob(observations), axis=-1)
-
   log_weights = log_p_z + log_p_x_given_z - log_q_z
-  log_sum_weight = tf.reduce_logsumexp(log_weights, axis=0)
+  log_sum_weight = tf.reduce_logsumexp(log_weights, axis=0)   # this converts back to IWAE estimator (log of the sum)
   log_avg_weight = log_sum_weight - tf.log(tf.to_float(num_samples))
+
+  log_p_hat_mean = tf.reduce_mean(log_avg_weight)
+
   normalized_weights = tf.stop_gradient(tf.nn.softmax(log_weights, axis=0))
 
   # Compute gradient estimators
   model_loss = log_avg_weight
   estimators = {}
 
-  # things we are interested in: (log_p_hat, neg_model_loss, neg_inference_loss)
+  # Build the evidence lower bound (ELBO) or the negative loss
+  kl = tf.reduce_mean(tfd.kl_divergence(proposal, prior), axis=-1)  # analytic KL
+  log_sum_ll = tf.reduce_logsumexp(log_p_x_given_z, axis=0)  # this converts back to IWAE estimator (log of the sum)
+  expected_log_likelihood = log_sum_ll - tf.log(tf.to_float(num_samples))
+  elbo = tf.reduce_mean(expected_log_likelihood - kl)
+  estimators["elbo"] = elbo
 
+  # things we are interested in: (log_p_hat, neg_model_loss, neg_inference_loss)
   estimators["iwae"] = (log_avg_weight, log_avg_weight, log_avg_weight)
 
-  # stopped_z_log_q_z = tf.reduce_sum(
-  #     proposal.log_prob(tf.stop_gradient(z)), axis=-1)
-  # estimators["rws"] = (log_avg_weight, model_loss,
-  #                      tf.reduce_sum(
-  #                          normalized_weights * stopped_z_log_q_z, axis=0))
+  stopped_z_log_q_z = tf.reduce_sum(
+      proposal.log_prob(tf.stop_gradient(z)), axis=-1)
+  estimators["rws"] = (log_avg_weight, model_loss,
+                       tf.reduce_sum(
+                           normalized_weights * stopped_z_log_q_z, axis=0))
 
   # # Doubly reparameterized
   stopped_proposal = q_z(observations, contexts, stop_gradient=True)
@@ -403,13 +397,13 @@ def iwae(p_z,
                        tf.reduce_sum(normalized_weights * stopped_log_weights, axis=0))
   estimators["dreg"] = (log_avg_weight, model_loss,
                         tf.reduce_sum(sq_normalized_weights * stopped_log_weights, axis=0))
-
+  #
   # estimators["rws-dreg"] = (
   #     log_avg_weight, model_loss,
   #     tf.reduce_sum(
   #         (normalized_weights - sq_normalized_weights) * stopped_log_weights,
   #         axis=0))
-  #
+
   # # Add normed versions
   # normalized_sq_normalized_weights = (
   #     sq_normalized_weights / tf.reduce_sum(

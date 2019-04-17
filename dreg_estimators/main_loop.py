@@ -36,15 +36,17 @@ flags.DEFINE_enum("estimator", "iwae", [
     "dreg-norm", "jk", "jk-dreg", "dreg-alpha"
 ], "Estimator type to use.")
 flags.DEFINE_float("alpha", 0.9, "Weighting for DReG(alpha)")
-flags.DEFINE_integer("batch_size", 32, "The batch size.")
+flags.DEFINE_integer("batch_size", 256, "The batch size.")
 flags.DEFINE_integer("num_samples", 64, "The numer of samples to use.")
 flags.DEFINE_integer("latent_dim", 50, "The dimension of the VAE latent space.")
 flags.DEFINE_float("learning_rate", 3e-4, "The learning rate for ADAM.")
 flags.DEFINE_integer("max_steps", int(5e6), "The number of steps to train for.")
 flags.DEFINE_integer("summarize_every", 100,
                      "Number of steps between summaries.")
-flags.DEFINE_string("logdir", "/tmp/dreg",
+flags.DEFINE_string("logdir", "/home/paul/Software/DREG-data",
                     "The directory to put summaries and checkpoints.")
+flags.DEFINE_string("subfolder", "",
+                    "Folder name to put summaries and checkpoints in (under logdir).")
 flags.DEFINE_bool("bias_check", False,
                   "Run a bias check instead of training the model.")
 flags.DEFINE_string(
@@ -66,9 +68,15 @@ flags.DEFINE_enum("dataset", "mnist", [
     "mnist",
     "struct_mnist",
     "omniglot",
-    "toy_gaussian"
 ], "Dataset to use.")
 flags.DEFINE_bool("image_summary", True, "Create visualizations")
+flags.DEFINE_integer("hidden_dims", 200,
+    ("How many nodes in the hidden dimensions of the encoder/decoder")
+)
+flags.DEFINE_integer("hidden_layers", 2,
+    ("How many nodes in the hidden layers of the encoder/decoder")
+)
+
 
 FLAGS = flags.FLAGS
 
@@ -83,10 +91,9 @@ def create_logging_hook(metrics):
       metrics, formatter=summary_formatter, every_n_iter=FLAGS.summarize_every)
   return logging_hook
 
-
 def main(unused_argv):
-  proposal_hidden_dims = [200] #[200, 200]
-  likelihood_hidden_dims = [200] #[200, 200]
+  proposal_hidden_dims = FLAGS.hidden_layers*[FLAGS.hidden_dims]
+  likelihood_hidden_dims = FLAGS.hidden_layers*[FLAGS.hidden_dims]
 
   with tf.Graph().as_default():
     alpha = tf.Variable(0.0, name="alpha_cv")
@@ -111,50 +118,49 @@ def main(unused_argv):
     # Placeholder for input mnist digits.
     observations_ph = tf.placeholder("float32", [None, 784])
 
-    # if FLAGS.dataset == "struct_mnist":
-    #   pass
-      # context_mean_xs = np.split(mean_xs, 2, 0)[0]
-      # prior = model.ConditionalNormal(
-      #     size=FLAGS.latent_dim,
-      #     hidden_layer_sizes=likelihood_hidden_dims,
-      #     mean_center=context_mean_xs,
-      #     hidden_activation_fn=tf.nn.tanh)
-      # proposal = model.ConditionalNormal(
-      #     FLAGS.latent_dim,
-      #     proposal_hidden_dims,
-      #     mean_center=mean_xs,
-      #     hidden_activation_fn=tf.nn.tanh)
-      # likelihood = model.ConditionalBernoulli(
-      #     784 // 2,
-      #     likelihood_hidden_dims,
-      #     bias_init=np.split(bias_init, 2, 0)[1],
-      #     hidden_activation_fn=tf.nn.tanh)
-      # observations, contexts = tf.split(
-      #     observations_ph, num_or_size_splits=2, axis=1)
-      # # pylint: disable=g-long-lambda
-      # get_model_params = (lambda: likelihood.fcnet.get_variables() +
-      #                     prior.fcnet.get_variables())
-      # # pylint: enable=g-long-lambda
-    # else:
-    # prior is Normal(0, 1)
-    prior_loc = tf.zeros([FLAGS.latent_dim], dtype=tf.float32)
-    prior_scale = tf.ones([FLAGS.latent_dim], dtype=tf.float32)
-    prior = lambda _: tfd.Normal(loc=prior_loc, scale=prior_scale)
+    if FLAGS.dataset == "struct_mnist":
+      context_mean_xs = np.split(mean_xs, 2, 0)[0]
+      prior = model.ConditionalNormal(
+          size=FLAGS.latent_dim,
+          hidden_layer_sizes=likelihood_hidden_dims,
+          mean_center=context_mean_xs,
+          hidden_activation_fn=tf.nn.tanh)
+      proposal = model.ConditionalNormal(
+          FLAGS.latent_dim,
+          proposal_hidden_dims,
+          mean_center=mean_xs,
+          hidden_activation_fn=tf.nn.tanh)
+      likelihood = model.ConditionalBernoulli(
+          784 // 2,
+          likelihood_hidden_dims,
+          bias_init=np.split(bias_init, 2, 0)[1],
+          hidden_activation_fn=tf.nn.tanh)
+      observations, contexts = tf.split(
+          observations_ph, num_or_size_splits=2, axis=1)
+      # pylint: disable=g-long-lambda
+      get_model_params = (lambda: likelihood.fcnet.get_variables() +
+                          prior.fcnet.get_variables())
+      # pylint: enable=g-long-lambda
+    else:
+        # prior is Normal(0, 1)
+        prior_loc = tf.zeros([FLAGS.latent_dim], dtype=tf.float32)
+        prior_scale = tf.ones([FLAGS.latent_dim], dtype=tf.float32)
+        prior = lambda _: tfd.Normal(loc=prior_loc, scale=prior_scale)
 
-    proposal = model.ConditionalNormal(
-      size=FLAGS.latent_dim,   # 50
-      hidden_layer_sizes=proposal_hidden_dims,  # two layers of 200
-      mean_center=mean_xs,
-      hidden_activation_fn=tf.nn.tanh)
+        proposal = model.ConditionalNormal(
+          size=FLAGS.latent_dim,   # 50
+          hidden_layer_sizes=proposal_hidden_dims,  # two layers of 200
+          mean_center=mean_xs,
+          hidden_activation_fn=tf.nn.tanh)
 
-    likelihood = model.ConditionalBernoulli(
-      784,    # mnist size
-      likelihood_hidden_dims,   # two layers of 200
-      bias_init=bias_init,
-      hidden_activation_fn=tf.nn.tanh)
+        likelihood = model.ConditionalBernoulli(
+          784,    # mnist size
+          likelihood_hidden_dims,   # two layers of 200
+          bias_init=bias_init,
+          hidden_activation_fn=tf.nn.tanh)
 
-    observations, contexts = observations_ph, None  # mini batch of train_xs
-    get_model_params = lambda: likelihood.fcnet.get_variables()  # pylint: disable=unnecessary-lambda
+        observations, contexts = observations_ph, None  # mini batch of train_xs
+        get_model_params = lambda: likelihood.fcnet.get_variables()  # pylint: disable=unnecessary-lambda
 
     # Compute the lower bound and the loss
     estimators = model.iwae(
@@ -183,19 +189,19 @@ def main(unused_argv):
         inference_loss, var_list=inference_network_params)
 
     # If we're using control variates, add gradients for these too.
-    # if "cv" in FLAGS.estimator:
-    #   vectorized_inference_grads = tf.concat(
-    #       [tf.reshape(g, [-1]) for g, _ in inference_grads if g is not None],
-    #       axis=0)
-    #   cv_grads = opt.compute_gradients(
-    #       tf.reduce_mean(tf.square(vectorized_inference_grads)),
-    #       var_list=tf.get_collection("CONTROL_VARIATES"))
-    #   tf.summary.scalar("alpha", alpha)
-    #   tf.summary.scalar("beta", beta)
-    #   tf.summary.scalar("gamma", gamma)
-    #   tf.summary.scalar("delta", delta)
-    # else:
-    cv_grads = []
+    if "cv" in FLAGS.estimator:
+      vectorized_inference_grads = tf.concat(
+          [tf.reshape(g, [-1]) for g, _ in inference_grads if g is not None],
+          axis=0)
+      cv_grads = opt.compute_gradients(
+          tf.reduce_mean(tf.square(vectorized_inference_grads)),
+          var_list=tf.get_collection("CONTROL_VARIATES"))
+      tf.summary.scalar("alpha", alpha)
+      tf.summary.scalar("beta", beta)
+      tf.summary.scalar("gamma", gamma)
+      tf.summary.scalar("delta", delta)
+    else:
+        cv_grads = []
 
     if FLAGS.initial_checkpoint_dir:
       # Just train the inference network from the initial checkpoint
@@ -232,25 +238,14 @@ def main(unused_argv):
       with tf.control_dependencies(ema_ops):
         train_op = opt.apply_gradients(grads, global_step=global_step)
 
-      # why would you norm these?
-      l2_norm = lambda t: tf.sqrt(tf.reduce_sum(tf.pow(t, 2)))
-
-      for gradient, variable in model_grads:
-          tf.summary.scalar("model_grads/" + variable.name, l2_norm(gradient))
-          tf.summary.scalar("model_vars/" + variable.name, l2_norm(variable))
-          tf.summary.histogram("model_grads/" + variable.name, gradient)
-          tf.summary.histogram("model_vars/" + variable.name, variable)
-
-      for gradient, variable in inference_grads:
-          tf.summary.histogram("inference_grads/" + variable.name, gradient)
-          tf.summary.histogram("inference_vars/" + variable.name, variable)
-
+      # this is what is summarised in the DREG paper
+      tf.summary.scalar("inference_grad_variance/%s" % FLAGS.estimator, inference_grad_variance)
       tf.summary.scalar("model_grad_variance", model_grad_variance)
-      tf.summary.scalar("inference_grad_variance/%s" % FLAGS.estimator,
-                        inference_grad_variance)
-      tf.summary.scalar("inference_grad_snr_sq/%s" % FLAGS.estimator,
-                        inference_grad_snr_sq)
+      tf.summary.scalar("inference_grad_snr_sq/%s" % FLAGS.estimator, inference_grad_snr_sq)
+
     tf.summary.scalar("log_p_hat/train", log_p_hat_mean)
+    tf.summary.scalar("estimators/elbo", estimators["elbo"]) # I added this - why does it not match log_p_hat?
+    tf.summary.scalar("estimators/difference", estimators["elbo"]-log_p_hat_mean)
 
     # Define an op to compute the paired t statistic (for bias checking)
     iwae_inference_grads = opt.compute_gradients(
@@ -262,10 +257,13 @@ def main(unused_argv):
       t_stat += tf.reduce_sum(g_a - g_b)
     t_stat /= n
 
-    exp_name = "%s.lr-%g.n_samples-%d.alpha-%g.dataset-%s.run-%d" % (
-        FLAGS.estimator, FLAGS.learning_rate, FLAGS.num_samples, FLAGS.alpha,
+    exp_name = "%s.lr-%g.n_samples-%d.batch_size-%d.alpha-%g.dataset-%s.run-%d" % (
+        FLAGS.estimator, FLAGS.learning_rate, FLAGS.num_samples, FLAGS.batch_size, FLAGS.alpha,
         FLAGS.dataset, FLAGS.run)
-    checkpoint_dir = os.path.join(FLAGS.logdir, exp_name)
+
+    checkpoint_dir = os.path.join(FLAGS.logdir, FLAGS.subfolder, exp_name)
+    print("Checkpoints: : ", checkpoint_dir)
+
     if FLAGS.initial_checkpoint_dir and not tf.gfile.Exists(checkpoint_dir):
       tf.gfile.MakeDirs(checkpoint_dir)
       f = "checkpoint"
@@ -332,21 +330,21 @@ def main(unused_argv):
           ns = indices[i:i + FLAGS.batch_size]
           batch_xs = utils.binarize_batch_xs(train_xs[ns])
 
-          # if FLAGS.bias_check and cur_step > 1000:
-          #   t_stat_val, = sess.run([t_stat], feed_dict={observations_ph: batch_xs})
-          #   t_stats.append(t_stat_val)
-          #   aggregate_t_stat = (
-          #       np.mean(t_stats) /
-          #       (np.std(t_stats, ddof=1) / np.sqrt(len(t_stats))))
-          #   print(
-          #       len(t_stats), np.mean(t_stats), np.std(t_stats, ddof=1),
-          #       aggregate_t_stat)
-          # else:
-          _, cur_step = sess.run([train_op, global_step], feed_dict={observations_ph: batch_xs})
+          if FLAGS.bias_check and cur_step > 1000:
+            t_stat_val, = sess.run([t_stat], feed_dict={observations_ph: batch_xs})
+            t_stats.append(t_stat_val)
+            aggregate_t_stat = (
+                np.mean(t_stats) /
+                (np.std(t_stats, ddof=1) / np.sqrt(len(t_stats))))
+            print(
+                len(t_stats), np.mean(t_stats), np.std(t_stats, ddof=1),
+                aggregate_t_stat)
+          else:
+            _, cur_step = sess.run([train_op, global_step], feed_dict={observations_ph: batch_xs})
 
         if n_epoch % 10 == 0:
           # Run a validation step and test step
-          run_eval(cur_step, "valid")
+          # run_eval(cur_step, "valid")
           run_eval(cur_step, "test")
 
 if __name__ == "__main__":

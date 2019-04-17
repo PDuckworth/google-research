@@ -52,6 +52,7 @@ def binarize_batch_xs(batch_xs, or_not = False):
 
 def summarize_grads(grads):
   """Summarize the gradient vector."""
+
   grad_ema = tf.train.ExponentialMovingAverage(decay=0.99)
   vectorized_grads = tf.concat([tf.reshape(g, [-1]) for g, _ in grads if g is not None], axis=0)
   new_second_moments = tf.square(vectorized_grads)
@@ -144,7 +145,7 @@ def load_toy_data(datapoints = 200, dim=1):
 
   # Create fake data points using a np distribution
   np.random.seed(SEED)
-  data = np.random.normal(loc=TRUE_MEAN, scale=TRUE_SCALE, size=(NUM_DATA_POINTS, 1))
+  data = np.random.normal(loc=TRUE_MEAN, scale=TRUE_SCALE, size=(NUM_DATA_POINTS, 1)).astype(np.float32)
 
   # Add a new axis so that tf can evaluate the log probability at each data point for many parameter values.
   train_xs = data[:1024]
