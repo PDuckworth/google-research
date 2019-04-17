@@ -66,19 +66,31 @@ class ToyPrior(object):
     """Creates a normal distribution"""
     return tfd.Normal(loc=self.mu, scale=tf.eye(self.size))
 
+
+DEFAULT_INITIALIZERS = {
+    "w": tf.contrib.layers.xavier_initializer(),
+    "b": tf.zeros_initializer()
+}
+
 class ToyNormalproposal(object):
 
   def __init__(self,
                size,
                hidden_layer_sizes,
+               initializers=None,
                use_bias=True,
                name="toy_normal"):
 
     self.size = size
     self.name = name
+    if initializers is None:
+      initializers = DEFAULT_INITIALIZERS
+
     self.fcnet = snt.Linear(output_size=hidden_layer_sizes,
                             use_bias=use_bias,
+                            initializers=initializers,
                             name=name + "_fcnet")
+
 
   def condition(self, tensor_list):
     """Computes the parameters of a normal distribution based on the inputs."""
@@ -97,8 +109,6 @@ class ToyNormalproposal(object):
     output_size = tf.concat([raw_input_shape, [1]], axis=0)
     out = tf.reshape(outs, output_size)
     return out
-    # mu, sigma = tf.split(outs, 2, axis=1)
-    # return mu, sigma
 
   def __call__(self, *args, **kwargs):
     """Creates a normal distribution conditioned on the inputs."""
@@ -106,96 +116,68 @@ class ToyNormalproposal(object):
     mu = self.condition(args)
     self.mu = mu
 
+    A = np.ones(FLAGS.latent_dim) / 2.
+    b = np.eye(FLAGS.latent_dim) * (3 / 2.)
+    tf_A = tf.Variable(A.astype(np.float32).reshape(FLAGS.latent_dim, FLAGS.latent_dim))
+    tf_b = tf.Variable(b.astype(np.float32).reshape(FLAGS.latent_dim, ))
+    self.fcnet.get_variables()[0].assign(tf_A)
+    self.fcnet.get_variables()[1].assign(tf_b)
+
     if kwargs.get("stop_gradient", False):
       mu = tf.stop_gradient(mu)
       # sigma = tf.stop_gradient(sigma)
     # return tfd.Normal(loc=mu, scale=sigma)
-    return tfd.Normal(loc=mu, scale=tf.eye(self.size)*(2/3.))
-
-
-
-def iwae(p_z, p_x_given_z, q_z, observations, num_samples):
-
-  proposal = q_z(observations, stop_gradient=False)
-  z = proposal.sample(sample_shape=[FLAGS.num_samples])
-
-  likelihood = p_x_given_z(z)
-  prior = p_z()
-  log_p_z = tf.reduce_sum(prior.log_prob(z), axis=-1)
-  log_q_z = tf.reduce_sum(proposal.log_prob(z), axis=-1)
-  log_p_x_given_z = tf.reduce_sum(likelihood.log_prob(observations), axis=-1)
-  log_weights = log_p_z + log_p_x_given_z - log_q_z
-  log_sum_weight = tf.reduce_logsumexp(log_weights, axis=0)   # this converts back to IWAE estimator (log of the sum)
-  log_avg_weight = log_sum_weight - tf.log(tf.to_float(num_samples))
-  log_p_hat_mean = tf.reduce_mean(log_avg_weight)
-
-  normalized_weights = tf.stop_gradient(tf.nn.softmax(log_weights, axis=0))
-
-  # Compute gradient estimators
-  model_loss = log_avg_weight
-  estimators = {}
-
-  # Build the evidence lower bound (ELBO) or the negative loss
-  kl = tf.reduce_mean(tfd.kl_divergence(proposal, prior), axis=-1)  # analytic KL
-  log_sum_ll = tf.reduce_logsumexp(log_p_x_given_z, axis=0)  # this converts back to IWAE estimator (log of the sum)
-  expected_log_likelihood = log_sum_ll - tf.log(tf.to_float(num_samples))
-  elbo = tf.reduce_mean(expected_log_likelihood - kl)
-  estimators["elbo"] = elbo
-
-  if tf.executing_eagerly():
-    # print("SAMPLES: ", z)
-    # print("prior log p_z : ", log_p_z)
-    # print("log_q_z", log_q_z)
-    # print("log_p_x_given_z: ", log_p_x_given_z)
-    # print("log_weights: ", log_weights)
-    print("log_p_hat_mean: ", log_p_hat_mean)
-    # print("KL ", kl)
-    # print("LL sum ", expected_log_likelihood)
-    print("elbo ", elbo)
-
-  # things we are interested in: (log_p_hat, neg_model_loss, neg_inference_loss)
-  # estimators["iwae"] = (log_avg_weight, log_avg_weight, log_avg_weight)
-
-  return log_avg_weight, log_avg_weight, log_avg_weight
+    return tfd.Normal(loc=mu, scale=tf.eye(self.size)*(2/3.)), self.fcnet.get_variables()
 
 
 def toy_example():
-
-    train_xs, valid_xs, test_xs = utils.load_toy_data()
-
-    # set up your prior dist, proposal and likelihood networks
-    z_prior = ToyPrior(mu = 3, size = 1, name="toy_prior")
-
-    likelihood = ToyMean(name="likelihood")
-
-    # with tf.name_scope('proposal') as scope:
-    proposal = ToyNormalproposal(
-        size=FLAGS.latent_dim,
-        hidden_layer_sizes=1,
-        use_bias=True,
-        name="proposal")
-
     with tf.GradientTape() as tape:
-        # # Compute the lower bound and the loss
 
-        log_p_hat, neg_model_loss, neg_inference_loss = \
-            iwae(z_prior, likelihood, proposal, train_xs, 64)
+        train_xs, valid_xs, test_xs = utils.load_toy_data()
 
-        model_loss = -tf.reduce_mean(neg_model_loss)
-        inference_loss = -tf.reduce_mean(neg_inference_loss)
-        log_p_hat_mean = tf.reduce_mean(log_p_hat)
+        # set up your prior dist, proposal and likelihood networks
+        p_z = ToyPrior(mu = 3, size = 1, name="toy_prior")
+
+        p_x_given_z = ToyMean(name="likelihood")
+
+        # with tf.name_scope('proposal') as scope:
+        q_z = ToyNormalproposal(
+            size=FLAGS.latent_dim,
+            hidden_layer_sizes=1,
+            initializers=None,
+            use_bias=True,
+            name="proposal")
+
+        # returns the Normal dist proposal, and also the params (fixed to optimal A and b)
+        proposal, inference_network_params = q_z(train_xs, stop_gradient=False)
+        print("params: ", inference_network_params)
+        z = proposal.sample(sample_shape=[FLAGS.num_samples])
+
+        likelihood = p_x_given_z(z)
+        prior = p_z()
+        log_p_z = tf.reduce_sum(prior.log_prob(z), axis=-1)
+        log_q_z = tf.reduce_sum(proposal.log_prob(z), axis=-1)
+        log_p_x_given_z = tf.reduce_sum(likelihood.log_prob(train_xs), axis=-1)
+        log_weights = log_p_z + log_p_x_given_z - log_q_z
+        log_sum_weight = tf.reduce_logsumexp(log_weights, axis=0)  # this converts back to IWAE estimator (log of the sum)
+        log_avg_weight = log_sum_weight - tf.log(tf.to_float(FLAGS.num_samples))
+
+        # Build the evidence lower bound (ELBO) or the negative loss
+        kl = tf.reduce_mean(tfd.kl_divergence(proposal, prior), axis=-1)  # analytic KL
+        log_sum_ll = tf.reduce_logsumexp(log_p_x_given_z, axis=0)  # this converts back to IWAE estimator (log of the sum)
+        expected_log_likelihood = log_sum_ll - tf.log(tf.to_float(FLAGS.num_samples))
+        KL_elbo = tf.reduce_mean(expected_log_likelihood - kl)
+
+        model_loss = -tf.reduce_mean(log_avg_weight)
+        inference_loss = -tf.reduce_mean(log_avg_weight)
+        log_p_hat_mean = tf.reduce_mean(log_avg_weight)
 
         # Set the network parameters to "close" to their optimal
         # noiseA = np.random.normal(loc=0, scale=0.01, size=(FLAGS.latent_dim, 1)).astype(np.float32)
         # noiseb = np.random.normal(loc=0, scale=0.01, size=(FLAGS.latent_dim,)).astype(np.float32)
-        A = np.ones(FLAGS.latent_dim) / 2.
-        b = np.eye(FLAGS.latent_dim) * (3 / 2.)
-        tf_A = tf.Variable(A.astype(np.float32).reshape(FLAGS.latent_dim, FLAGS.latent_dim))
-        tf_b = tf.Variable(b.astype(np.float32).reshape(FLAGS.latent_dim, ))
-        proposal.fcnet.get_variables()[0].assign(tf_A)
-        proposal.fcnet.get_variables()[1].assign(tf_b)
 
-        inference_network_params = proposal.fcnet.get_variables()
+
+        # inference_network_params = proposal.fcnet.get_variables()
 
         # opt = tf.train.AdamOptimizer(FLAGS.learning_rate)
         # inference_grads = opt.compute_gradients(inference_loss, var_list=inference_network_params)
