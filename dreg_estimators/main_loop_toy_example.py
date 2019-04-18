@@ -37,7 +37,7 @@ flags.DEFINE_enum("estimator", "iwae", [
 ], "Estimator type to use.")
 flags.DEFINE_float("alpha", 0.9, "Weighting for DReG(alpha)")
 flags.DEFINE_integer("batch_size", 256, "The batch size.")
-flags.DEFINE_integer("num_samples", 1, "The numer of K samples to use.")
+flags.DEFINE_integer("num_samples", 2, "The numer of K samples to use.")
 flags.DEFINE_integer("latent_dim", 1, "The dimension of the VAE latent space.")
 flags.DEFINE_float("learning_rate", 3e-4, "The learning rate for ADAM.")
 flags.DEFINE_integer("max_steps", int(5e4), "The number of steps to train for.")
@@ -96,6 +96,7 @@ def main(unused_argv):
       train_xs, valid_xs, test_xs = utils.load_omniglot()
     elif FLAGS.dataset == "toy":
       train_xs, valid_xs, test_xs = utils.load_toy_data()
+    print("dataset = ", train_xs.shape)
 
     # Placeholder for input mnist digits.
     # observations_ph = tf.placeholder("float32", [None, 2])
@@ -103,9 +104,6 @@ def main(unused_argv):
 
     # set up your prior dist, proposal and likelihood networks
     (prior, likelihood, proposal) = model.get_toy_models(train_xs, which_example="toy1D")
-
-    # no parameters in likelihood (decoder) model
-    # get_model_params = lambda: likelihood.fcnet.get_variables()  # pylint: disable=unnecessary-lambda
 
     # Compute the lower bound and the loss
     estimators = model.iwae(
@@ -116,6 +114,7 @@ def main(unused_argv):
         FLAGS.num_samples, [], # [alpha, beta, gamma, delta],
         contexts=None)
 
+    print("VARS: ", proposal.fcnet.get_variables())
     log_p_hat, neg_model_loss, neg_inference_loss = estimators[FLAGS.estimator]
     elbo = estimators["elbo"]
 
@@ -126,7 +125,8 @@ def main(unused_argv):
     # this is over K samples
     print("INFERENCE LOSS SHAPE = ", neg_inference_loss.shape)
 
-    # model_params = get_model_params()
+    model_params = prior.get_parameter_mu()
+    print(model_params)
     inference_network_params = proposal.fcnet.get_variables()
 
     # Compute and apply the gradients, summarizing the gradient variance.
@@ -134,20 +134,19 @@ def main(unused_argv):
     opt = tf.train.AdamOptimizer(FLAGS.learning_rate)
 
     cv_grads = []
-    # inference model (encoder) params are just A and b. (Ax+b)
 
+    model_grads = opt.compute_gradients(model_loss, var_list=model_params)
+    # inference model (encoder) params are just A and b. (Ax+b)
     inference_grads = opt.compute_gradients(inference_loss, var_list=inference_network_params)
 
-    # model_grads = opt.compute_gradients(model_loss, var_list=model_params)
-    # grads = model_grads + inference_grads + cv_grads
-    grads = inference_grads
+    grads = model_grads + inference_grads #+ cv_grads
 
-    # model_ema_op, model_grad_variance, _ = (utils.summarize_grads(model_grads))
-    print("inference grads = ", inference_grads)
+    model_ema_op, model_grad_variance, _ = (utils.summarize_grads(model_grads))
+    print("grads = ", grads)
     inference_ema_op, inference_grad_variance, inference_grad_snr_sq = (utils.summarize_grads(inference_grads))
 
-    # ema_ops = [model_ema_op, inference_ema_op]
-    ema_ops = [inference_ema_op]
+    ema_ops = [model_ema_op, inference_ema_op]
+
     # this ensures you evaluate ema_ops before the apply_gradient function :)
     with tf.control_dependencies(ema_ops):
         train_op = opt.apply_gradients(grads, global_step=global_step)
@@ -161,10 +160,11 @@ def main(unused_argv):
 
     tf.summary.scalar("estimators/elbo", elbo)
     tf.summary.scalar("estimators/difference", elbo-log_p_hat_mean)
+
     # tf.summary.scalar("phi_grad/%s" % FLAGS.estimator, inference_ema_op)
     tf.summary.scalar("phi_grad_variance/%s" % FLAGS.estimator, inference_grad_variance)
 
-    # tf.summary.scalar("model_grad_variance", model_grad_variance)
+    tf.summary.scalar("model_grad", model_grad_variance)
     # tf.summary.scalar("inference_grad_snr_sq/%s" % FLAGS.estimator, inference_grad_snr_sq)
 
     tf.summary.scalar("log_p_hat/train", log_p_hat_mean)
@@ -245,7 +245,7 @@ def main(unused_argv):
 
           _, cur_step, grads_ = \
               sess.run([train_op, global_step, grads], feed_dict={observations_ph: batch_xs})
-        # grads_ = sess.run([train_op, global_step, model_params, grads], feed_dict={observations_ph: batch_xs})
+          # grads_ = sess.run([train_op, global_step, model_params, grads], feed_dict={observations_ph: batch_xs})
 
         if n_epoch % 10 == 0:
           print("epoch #", n_epoch)
@@ -258,4 +258,7 @@ def main(unused_argv):
             print(var_names[m],": grad, val: ", i, j)
 
 if __name__ == "__main__":
-  tf.app.run(main)
+    ## FORCE TO USE THE CPU:
+    os.environ['CUDA_VISIBLE_DEVICES'] = ""
+
+    tf.app.run(main)
