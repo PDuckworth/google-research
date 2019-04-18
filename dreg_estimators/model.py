@@ -166,44 +166,57 @@ class ConditionalNormal(object):
     return tfd.Normal(loc=mu, scale=sigma)
 
 
-class ToyMean(object):
-  def __init__(self, size =1, name="toy_mean"):
+class ToyConditionalNormalLikelihood(object):
+  def __init__(self, size =1, name="toy_likelihood"):
     self.size = size
     self.name = name
+
   def __call__(self, *args, **kwargs):
     """Creates a normal distribution (conditioned?) on the inputs."""
     return tfd.Normal(loc=args, scale=tf.eye(self.size))
 
 
 class ToyPrior(object):
-  def __init__(self, mu = 1, size = 1, name="toy_prior"):
+  def __init__(self, mu_inital_value = 2, size = 1, name="toy_prior"):
     self.size = size
     self.name = name
-    self.mu = mu
-    self.mu = tf.ones(self.size)*self.mu
-    self.fcnet = tfd.Normal(loc = self.mu, scale = tf.eye(self.size))
+    self.mu_inital_value = mu_inital_value
+    self.mu = tf.Variable(name="mu", initial_value=self.mu_inital_value)
+
+  def get_parameter_mu(self):
+    return self.mu
+
   def __call__(self, *args, **kwargs):
     """Creates a normal distribution"""
     return tfd.Normal(loc=self.mu, scale=tf.eye(self.size))
 
+DEFAULT_INITIALIZERS = {
+    "w": tf.contrib.layers.xavier_initializer(),
+    "b": tf.zeros_initializer()
+}
 
-class ToyNormalproposal(object):
+class ToyConditionalNormal(object):
 
   def __init__(self,
                size,
                hidden_layer_sizes,
+               initializers=None,
                use_bias=True,
                name="toy_normal"):
 
     self.size = size
     self.name = name
+    if initializers is None:
+      initializers = DEFAULT_INITIALIZERS
     self.fcnet = snt.Linear(output_size=hidden_layer_sizes,
                             use_bias=use_bias,
+                            initializers=initializers,
                             name=name + "_fcnet")
 
   def condition(self, tensor_list):
     """Computes the parameters of a normal distribution based on the inputs."""
     # # Remove None's from tensor_list
+
     tensor_list = [t for t in tensor_list if t is not None]
     concatted_inputs = tf.concat(tensor_list, axis=-1)
     input_dim = concatted_inputs.get_shape().as_list()[-1]
@@ -211,7 +224,7 @@ class ToyNormalproposal(object):
     fcnet_input_shape = [tf.reduce_prod(raw_input_shape), input_dim]
     fcnet_inputs = tf.reshape(concatted_inputs, fcnet_input_shape)
 
-    print("fcnet_inputs shape:", fcnet_inputs.shape)
+    # print("fcnet_inputs shape:", fcnet_inputs.shape, type(fcnet_inputs))
     outs = self.fcnet(fcnet_inputs)
 
     # Reshape outputs to the original shape.
@@ -292,12 +305,12 @@ def get_toy_models(train_xs, which_example="toy1D"):
     # prior_scale = tf.ones(latent_dim, dtype=tf.float32)
     # # with tf.name_scope('prior') as scope:
 
-    z_prior = ToyPrior(mu = 3, size = 1, name="toy_prior")
+    z_prior = ToyPrior(mu_inital_value = 2., size = FLAGS.latent_dim, name="toy_prior")
 
-    likelihood = ToyMean(name="likelihood")
+    likelihood = ToyConditionalNormalLikelihood()
 
     # with tf.name_scope('proposal') as scope:
-    proposal = ToyNormalproposal(
+    proposal = ToyConditionalNormal(
       size=latent_dim,
       hidden_layer_sizes=1,
       use_bias=True,
@@ -341,7 +354,7 @@ def iwae(p_z,
       neg_inference_network_loss).
   """
   # alpha, beta, gamma, delta = cvs
-
+  batch_size = tf.shape(observations)[0]
   print("OBS SHAPE: ", observations.shape)
   proposal = q_z(observations, contexts, stop_gradient=False)
   # [num_samples, batch_size, latent_size]
@@ -397,56 +410,56 @@ def iwae(p_z,
                        tf.reduce_sum(normalized_weights * stopped_log_weights, axis=0))
   estimators["dreg"] = (log_avg_weight, model_loss,
                         tf.reduce_sum(sq_normalized_weights * stopped_log_weights, axis=0))
-  #
-  # estimators["rws-dreg"] = (
-  #     log_avg_weight, model_loss,
-  #     tf.reduce_sum(
-  #         (normalized_weights - sq_normalized_weights) * stopped_log_weights,
-  #         axis=0))
 
-  # # Add normed versions
-  # normalized_sq_normalized_weights = (
-  #     sq_normalized_weights / tf.reduce_sum(
-  #         sq_normalized_weights, axis=0, keepdims=True))
-  # estimators["dreg-norm"] = (
-  #     log_avg_weight, model_loss,
-  #     tf.reduce_sum(
-  #         normalized_sq_normalized_weights * stopped_log_weights, axis=0))
-  #
-  # rws_dregs_weights = normalized_weights - sq_normalized_weights
-  # normalized_rws_dregs_weights = rws_dregs_weights / tf.reduce_sum(
-  #     rws_dregs_weights, axis=0, keepdims=True)
-  # estimators["rws-dreg-norm"] = (
-  #     log_avg_weight, model_loss,
-  #     tf.reduce_sum(normalized_rws_dregs_weights * stopped_log_weights, axis=0))
-  #
-  # estimators["dreg-alpha"] = (log_avg_weight, model_loss,
-  #                             (1 - FLAGS.alpha) * estimators["dreg"][-1] +
-  #                             FLAGS.alpha * estimators["rws-dreg"][-1])
-  #
-  # # Jackknife
-  # loo_log_weights = tf.tile(
-  #     tf.expand_dims(tf.transpose(log_weights), -1), [1, 1, num_samples])
-  # loo_log_weights = tf.matrix_set_diag(
-  #     loo_log_weights, -np.inf * tf.ones([batch_size, num_samples]))
-  # loo_log_avg_weight = tf.reduce_mean(
-  #     tf.reduce_logsumexp(loo_log_weights, axis=1) - tf.log(
-  #         tf.to_float(num_samples - 1)),
-  #     axis=-1)
-  # jk_model_loss = num_samples * log_avg_weight - (
-  #     num_samples - 1) * loo_log_avg_weight
-  #
-  # estimators["jk"] = (jk_model_loss, jk_model_loss, jk_model_loss)
-  #
-  # # Compute JK w/ DReG for the inference network
-  # loo_normalized_weights = tf.reduce_mean(
-  #     tf.square(tf.stop_gradient(tf.nn.softmax(loo_log_weights, axis=1))),
-  #     axis=-1)
-  # estimators["jk-dreg"] = (
-  #     jk_model_loss, jk_model_loss, num_samples * tf.reduce_sum(
-  #         sq_normalized_weights * stopped_log_weights, axis=0) -
-  #     (num_samples - 1) * tf.reduce_sum(
-  #         tf.transpose(loo_normalized_weights) * stopped_log_weights, axis=0))
+  estimators["rws-dreg"] = (
+      log_avg_weight, model_loss,
+      tf.reduce_sum(
+          (normalized_weights - sq_normalized_weights) * stopped_log_weights,
+          axis=0))
+
+  # Add normed versions
+  normalized_sq_normalized_weights = (
+      sq_normalized_weights / tf.reduce_sum(
+          sq_normalized_weights, axis=0, keepdims=True))
+  estimators["dreg-norm"] = (
+      log_avg_weight, model_loss,
+      tf.reduce_sum(
+          normalized_sq_normalized_weights * stopped_log_weights, axis=0))
+
+  rws_dregs_weights = normalized_weights - sq_normalized_weights
+  normalized_rws_dregs_weights = rws_dregs_weights / tf.reduce_sum(
+      rws_dregs_weights, axis=0, keepdims=True)
+  estimators["rws-dreg-norm"] = (
+      log_avg_weight, model_loss,
+      tf.reduce_sum(normalized_rws_dregs_weights * stopped_log_weights, axis=0))
+
+  estimators["dreg-alpha"] = (log_avg_weight, model_loss,
+                              (1 - FLAGS.alpha) * estimators["dreg"][-1] +
+                              FLAGS.alpha * estimators["rws-dreg"][-1])
+
+  # Jackknife
+  loo_log_weights = tf.tile(
+      tf.expand_dims(tf.transpose(log_weights), -1), [1, 1, num_samples])
+  loo_log_weights = tf.matrix_set_diag(
+      loo_log_weights, -np.inf * tf.ones([batch_size, num_samples]))
+  loo_log_avg_weight = tf.reduce_mean(
+      tf.reduce_logsumexp(loo_log_weights, axis=1) - tf.log(
+          tf.to_float(num_samples - 1)),
+      axis=-1)
+  jk_model_loss = num_samples * log_avg_weight - (
+      num_samples - 1) * loo_log_avg_weight
+
+  estimators["jk"] = (jk_model_loss, jk_model_loss, jk_model_loss)
+
+  # Compute JK w/ DReG for the inference network
+  loo_normalized_weights = tf.reduce_mean(
+      tf.square(tf.stop_gradient(tf.nn.softmax(loo_log_weights, axis=1))),
+      axis=-1)
+  estimators["jk-dreg"] = (
+      jk_model_loss, jk_model_loss, num_samples * tf.reduce_sum(
+          sq_normalized_weights * stopped_log_weights, axis=0) -
+      (num_samples - 1) * tf.reduce_sum(
+          tf.transpose(loo_normalized_weights) * stopped_log_weights, axis=0))
   #
   # # Compute control variates
   # loo_baseline = tf.expand_dims(tf.transpose(log_weights), -1)

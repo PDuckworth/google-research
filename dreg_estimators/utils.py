@@ -133,6 +133,7 @@ def load_mnist():
 
 def load_toy_data(datapoints = 200, dim=1):
   SEED = 11
+
   TRUE_MEAN = 2
   TRUE_SCALE = 1
   NUM_DATA_POINTS = 1024*2
