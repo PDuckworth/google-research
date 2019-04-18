@@ -60,7 +60,8 @@ class ToyPrior(object):
   def __init__(self, mu_inital_value = 2., size = 1, name="toy_prior"):
     self.size = size
     self.name = name
-
+    self.mu_inital_value = mu_inital_value
+    self.mu = tf.Variable(name="mu", initial_value= self.mu_inital_value)
 
   def __call__(self, *args, **kwargs):
     """Creates a normal distribution"""
