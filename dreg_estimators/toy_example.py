@@ -20,6 +20,8 @@ from __future__ import division
 from __future__ import print_function
 import os
 import random
+
+import GPy
 import numpy as np
 
 import sonnet as snt
@@ -29,6 +31,11 @@ import tensorflow_probability as tfp
 
 import model as model
 import utils as utils
+from bayesquad.batch_selection import select_batch, KRIGING_BELIEVER
+from bayesquad.gp_prior_means import NegativeQuadratic
+from bayesquad.gps import VanillaGP
+from bayesquad.priors import Gaussian
+from bayesquad.quadrature import IntegrandModel
 from tensorflow.python.training import summary_io
 
 tfd = tfp.distributions
@@ -38,10 +45,10 @@ flags.DEFINE_enum("estimator", "iwae", [
     "iwae", "rws", "stl", "dreg", "dreg-cv", "rws-dreg", "rws-dreg-norm",
     "dreg-norm", "jk", "jk-dreg", "dreg-alpha"
 ], "Estimator type to use.")
-flags.DEFINE_integer("num_samples", 64, "The numer of K samples to use.")
+flags.DEFINE_integer("num_samples", 1, "The numer of K samples to use.")
 flags.DEFINE_integer("latent_dim", 1, "The dimension of the VAE latent space.")
 flags.DEFINE_float("learning_rate", 3e-4, "The learning rate for ADAM.")
-flags.DEFINE_integer("batch_size", 1024, "The batch size.")
+flags.DEFINE_integer("batch_size", 1, "The batch size.")
 
 tf.enable_eager_execution()
 
@@ -197,31 +204,91 @@ def toy_example():
         log_sum_weight = tf.reduce_logsumexp(log_weights, axis=0)  # this converts back to IWAE estimator (log of the sum)
         log_avg_weight = log_sum_weight - tf.log(tf.to_float(FLAGS.num_samples))
 
-        # # Build the evidence lower bound (ELBO) or the negative loss
+        # Build the evidence lower bound (ELBO) or the negative loss
         # kl = tf.reduce_mean(tfd.kl_divergence(proposal, prior), axis=-1)  # analytic KL
         # log_sum_ll = tf.reduce_logsumexp(log_p_x_given_z, axis=0)  # this converts back to IWAE estimator (log of the sum)
         # expected_log_likelihood = log_sum_ll - tf.log(tf.to_float(FLAGS.num_samples))
         # KL_elbo = tf.reduce_mean(expected_log_likelihood - kl)
 
-        # model_loss = -tf.reduce_mean(log_avg_weight)
+
+
+
+        def get_log_joint(z):
+            return np.reshape(p_x_given_z(z).log_prob(batch_xs).numpy() + prior.log_prob(z).numpy(), (-1, 1))
+
+        kernel = GPy.kern.RBF(1, variance=2, lengthscale=2)
+        kernel.variance.constrain_bounded(1e-5, 1e5)
+        bq_likelihood = GPy.likelihoods.Gaussian(variance=1e-1)
+
+        bq_prior = Gaussian(mean=proposal._loc.numpy().squeeze(), covariance=proposal._scale.numpy().item())
+
+        initial_x = bq_prior.sample(5)
+        initial_y = []
+        for point in initial_x:
+            initial_y.append(get_log_joint(np.atleast_2d(point)))
+        initial_y = np.concatenate(initial_y)
+        mean_function = NegativeQuadratic(1)
+        gpy_gp = GPy.core.GP(initial_x, initial_y, kernel=kernel, likelihood=bq_likelihood, mean_function=mean_function)
+        warped_gp = VanillaGP(gpy_gp)
+        bq_model = IntegrandModel(warped_gp, bq_prior)
+
+        for i in range(10):
+            if i % 5 == 0:
+                gpy_gp.optimize_restarts(num_restarts=5)
+            failed = True
+            while failed:
+                try:
+                    batch = select_batch(bq_model, 1, KRIGING_BELIEVER)
+                    failed = False
+                except FloatingPointError:
+                    gpy_gp.optimize_restarts(num_restarts=5)
+
+            X = np.array(batch)
+            Y = get_log_joint(X)
+
+            bq_model.update(batch, Y)
+
+        gpy_gp.optimize_restarts(num_restarts=5)
+
+        bq_elbo = bq_model.integral_mean()
+
+        import scipy.integrate
+        def integrand(z):
+            return get_log_joint(z) * np.exp(bq_prior.logpdf(np.atleast_2d(z)))
+        brute_force_elbo = scipy.integrate.quad(integrand, -10, 10)
+
+        # Set the network parameters to "close" to their optimal
+        # noiseA = np.random.normal(loc=0, scale=0.01, size=(FLAGS.latent_dim, 1)).astype(np.float32)
+        # noiseb = np.random.normal(loc=0, scale=0.01, size=(FLAGS.latent_dim,)).astype(np.float32)
+
+        # inference_network_params = proposal.fcnet.get_variables()
+
+        # opt = tf.train.AdamOptimizer(FLAGS.learning_rate)
+        # inference_grads = opt.compute_gradients(inference_loss, var_list=inference_network_params)
+        # print("Grads, = ", inference_grads)
+
         inference_loss = -tf.reduce_mean(log_avg_weight)
+
         # log_p_hat_mean = tf.reduce_mean(log_avg_weight)
         print("inference_loss ", inference_loss)
 
-    grads = tape.gradient(inference_loss, parameters)
-    vectorized_grads = [np.array(g).reshape(1,) for g in grads]
-    print("GRADIENTS = ", vectorized_grads)
+        print("BQ ", bq_elbo)
+        print("ELBO ", brute_force_elbo)
 
-    # first_moments = np.average(vectorized_grads)
-    # print("first_moments  = ", first_moments )
-    # second_moments = np.average(tf.square(vectorized_grads))
-    # print("second_moments  = ", second_moments)
-    #
-    # variances = second_moments - tf.square(first_moments)
-    # inference_grad_snr_sq = tf.reduce_mean(tf.square(first_moments)) / tf.reduce_mean(variances)
-    # snr = tf.reduce_mean(tf.square(first_moments)) / tf.reduce_mean(variances)
-    #
-    # print("SNR = ", snr)
+        grads = tape.gradient(inference_loss, parameters)
+        vectorized_grads = [np.array(g).reshape(1, ) for g in grads]
+        print("GRADIENTS = ", vectorized_grads)
+
+        # first_moments = np.average(vectorized_grads)
+        # print("first_moments  = ", first_moments )
+        # second_moments = np.average(tf.square(vectorized_grads))
+        # print("second_moments  = ", second_moments)
+        #
+        # variances = second_moments - tf.square(first_moments)
+        # inference_grad_snr_sq = tf.reduce_mean(tf.square(first_moments)) / tf.reduce_mean(variances)
+        # snr = tf.reduce_mean(tf.square(first_moments)) / tf.reduce_mean(variances)
+        #
+        # print("SNR = ", snr)
 
 
 if __name__ == "__main__":
