@@ -41,30 +41,31 @@ flags.DEFINE_enum("estimator", "iwae", [
 flags.DEFINE_integer("num_samples", 64, "The numer of K samples to use.")
 flags.DEFINE_integer("latent_dim", 1, "The dimension of the VAE latent space.")
 flags.DEFINE_float("learning_rate", 3e-4, "The learning rate for ADAM.")
+flags.DEFINE_integer("batch_size", 1024, "The batch size.")
 
 tf.enable_eager_execution()
 
 FLAGS = flags.FLAGS
 
 
-class ToyMean(object):
+class ToyConditionalNormalLikelihood(object):
   def __init__(self, size =1, name="toy_mean"):
     self.size = size
     self.name = name
+
   def __call__(self, *args, **kwargs):
-    """Creates a normal distribution (conditioned?) on the inputs."""
     return tfd.Normal(loc=args, scale=tf.eye(self.size))
 
 class ToyPrior(object):
-  def __init__(self, mu = 1, size = 1, name="toy_prior"):
+  def __init__(self, mu_inital_value = 2., size = 1, name="toy_prior"):
     self.size = size
     self.name = name
-    self.mu = mu
-    self.mu = tf.ones(self.size)*self.mu
-    self.fcnet = tfd.Normal(loc = self.mu, scale = tf.eye(self.size))
+    self.mu_inital_value = mu_inital_value
+    self.mu = tf.Variable(name="mu", initial_value= self.mu_inital_value)
+
   def __call__(self, *args, **kwargs):
     """Creates a normal distribution"""
-    return tfd.Normal(loc=self.mu, scale=tf.eye(self.size))
+    return tfd.Normal(loc=self.mu, scale=tf.eye(self.size)), self.mu
 
 
 DEFAULT_INITIALIZERS = {
@@ -72,7 +73,7 @@ DEFAULT_INITIALIZERS = {
     "b": tf.zeros_initializer()
 }
 
-class ToyNormalproposal(object):
+class ToyConditionalNormal(object):
 
   def __init__(self,
                size,
@@ -91,42 +92,50 @@ class ToyNormalproposal(object):
                             initializers=initializers,
                             name=name + "_fcnet")
 
-
   def condition(self, tensor_list):
     """Computes the parameters of a normal distribution based on the inputs."""
     # # Remove None's from tensor_list
-    tensor_list = [t for t in tensor_list if t is not None]
-    concatted_inputs = tf.concat(tensor_list, axis=-1)
-    input_dim = concatted_inputs.get_shape().as_list()[-1]
-    raw_input_shape = tf.shape(concatted_inputs)[:-1]
-    fcnet_input_shape = [tf.reduce_prod(raw_input_shape), input_dim]
-    fcnet_inputs = tf.reshape(concatted_inputs, fcnet_input_shape)
 
+    if isinstance(tensor_list, np.ndarray):
+        tensor_list = [t.item() for t in tensor_list]
+    else:
+        tensor_list = [t[0].item() for t in tensor_list[0]]
+
+    # # Hacked this a bit for a list of ndarray inputs
+    # concatted_inputs = tf.concat(tensor_list, axis=-1)
+    input_dim = self.size
+    raw_input_shape = tf.shape(tensor_list)
+    fcnet_input_shape = [tf.reduce_prod(raw_input_shape), input_dim]
+    fcnet_inputs = tf.reshape(tensor_list, fcnet_input_shape)
     print("fcnet_inputs shape:", fcnet_inputs.shape)
     outs = self.fcnet(fcnet_inputs)
+    return outs
 
-    # Reshape outputs to the original shape.
-    output_size = tf.concat([raw_input_shape, [1]], axis=0)
-    out = tf.reshape(outs, output_size)
-    return out
+  def initialise_network(self, some_data):
+      mu = self.condition(some_data)
+      self.fcnet.get_variables()
+
+      # Set the network parameters to "close" to their optimal
+      noiseA = np.random.normal(loc=0, scale=0.01, size=(FLAGS.latent_dim, 1)).astype(np.float32)
+      noiseb = np.random.normal(loc=0, scale=0.01, size=(FLAGS.latent_dim,)).astype(np.float32)
+
+      A = np.ones(FLAGS.latent_dim) / 2. #+ noiseA
+      b = np.eye(FLAGS.latent_dim) * (2 / 2.) #+ noiseb
+      tf_A = tf.Variable(A.astype(np.float32).reshape(FLAGS.latent_dim, FLAGS.latent_dim))
+      tf_b = tf.Variable(b.astype(np.float32).reshape(FLAGS.latent_dim, ))
+
+      self.fcnet.get_variables()[0].assign(tf_A)
+      self.fcnet.get_variables()[1].assign(tf_b)
+
 
   def __call__(self, *args, **kwargs):
     """Creates a normal distribution conditioned on the inputs."""
-    # mu, sigma = self.condition(args)
-    mu = self.condition(args)
-    self.mu = mu
 
-    A = np.ones(FLAGS.latent_dim) / 2.
-    b = np.eye(FLAGS.latent_dim) * (3 / 2.)
-    tf_A = tf.Variable(A.astype(np.float32).reshape(FLAGS.latent_dim, FLAGS.latent_dim))
-    tf_b = tf.Variable(b.astype(np.float32).reshape(FLAGS.latent_dim, ))
-    self.fcnet.get_variables()[0].assign(tf_A)
-    self.fcnet.get_variables()[1].assign(tf_b)
+    mu1 = self.condition(args)
+    mu = tf.Variable(name="mu", initial_value=mu1)
 
     if kwargs.get("stop_gradient", False):
-      mu = tf.stop_gradient(mu)
-      # sigma = tf.stop_gradient(sigma)
-    # return tfd.Normal(loc=mu, scale=sigma)
+        mu = tf.stop_gradient(mu)
     return tfd.Normal(loc=mu, scale=tf.eye(self.size)*(2/3.)), self.fcnet.get_variables()
 
 
@@ -134,30 +143,44 @@ def toy_example():
     with tf.GradientTape() as tape:
 
         train_xs, valid_xs, test_xs = utils.load_toy_data()
+        batch_xs = train_xs[0:FLAGS.batch_size]
+        print("batch shape: ", batch_xs.shape)
 
-        # set up your prior dist, proposal and likelihood networks
-        p_z = ToyPrior(mu = 3, size = 1, name="toy_prior")
+        # set up your prior model, proposal and likelihood networks
+        p_z = ToyPrior(mu_inital_value = 2., size=FLAGS.latent_dim, name="toy_prior")
 
-        p_x_given_z = ToyMean(name="likelihood")
+        # returns a callable Normal distribution
+        p_x_given_z = ToyConditionalNormalLikelihood()
 
         # with tf.name_scope('proposal') as scope:
-        q_z = ToyNormalproposal(
+        q_z = ToyConditionalNormal(
             size=FLAGS.latent_dim,
             hidden_layer_sizes=1,
             initializers=None,
             use_bias=True,
             name="proposal")
 
-        # returns the Normal dist proposal, and also the params (fixed to optimal A and b)
-        proposal, inference_network_params = q_z(train_xs, stop_gradient=False)
-        print("params: ", inference_network_params)
-        z = proposal.sample(sample_shape=[FLAGS.num_samples])
+        # initialise the network parameters to near optimal
+        q_z.initialise_network(batch_xs)
 
+        # returns the Normal dist proposal, and the parameters (fixed to optimal A and b)
+        proposal, inference_network_params = q_z(batch_xs, stop_gradient=False)
+        z = proposal.sample(sample_shape=[FLAGS.num_samples])
+        print("samples ", z.shape)
+
+        # returns a Normal dist conditioned on z
         likelihood = p_x_given_z(z)
-        prior = p_z()
+
+        # returns the Prior normal (p_z), and the parameter mu
+        prior, mu = p_z()
+
+        # merge the parameters to compute gradients wrt
+        # parameters = (inference_network_params[0], inference_network_params[1], mu)
+
         log_p_z = tf.reduce_sum(prior.log_prob(z), axis=-1)
         log_q_z = tf.reduce_sum(proposal.log_prob(z), axis=-1)
-        log_p_x_given_z = tf.reduce_sum(likelihood.log_prob(train_xs), axis=-1)
+        log_p_x_given_z = tf.reduce_sum(likelihood.log_prob(batch_xs), axis=-1)
+
         log_weights = log_p_z + log_p_x_given_z - log_q_z
         log_sum_weight = tf.reduce_logsumexp(log_weights, axis=0)  # this converts back to IWAE estimator (log of the sum)
         log_avg_weight = log_sum_weight - tf.log(tf.to_float(FLAGS.num_samples))
@@ -171,36 +194,26 @@ def toy_example():
         model_loss = -tf.reduce_mean(log_avg_weight)
         inference_loss = -tf.reduce_mean(log_avg_weight)
         log_p_hat_mean = tf.reduce_mean(log_avg_weight)
+        print("inference_loss ", inference_loss)
 
-        # Set the network parameters to "close" to their optimal
-        # noiseA = np.random.normal(loc=0, scale=0.01, size=(FLAGS.latent_dim, 1)).astype(np.float32)
-        # noiseb = np.random.normal(loc=0, scale=0.01, size=(FLAGS.latent_dim,)).astype(np.float32)
+    grads = tape.gradient(inference_loss, inference_network_params)
 
+    # inference_grads = grads[:2]
+    print(">", grads)
 
-        # inference_network_params = proposal.fcnet.get_variables()
+    generator_grads = grads[2:]
 
-        # opt = tf.train.AdamOptimizer(FLAGS.learning_rate)
-        # inference_grads = opt.compute_gradients(inference_loss, var_list=inference_network_params)
-        # print("Grads, = ", inference_grads)
+    vectorized_grads = tf.concat([tf.reshape(g, [-1]) for g in inference_grads if g is not None], axis=0)
+    first_moments = np.average(vectorized_grads)
+    second_moments = np.average(tf.square(vectorized_grads))
+    variances = second_moments - tf.square(first_moments)
+    inference_grad_snr_sq = tf.reduce_mean(tf.square(first_moments)) / tf.reduce_mean(variances)
 
-        inference_grads = tape.gradient(inference_loss, inference_network_params)
-        vectorized_grads = tf.concat([tf.reshape(g, [-1]) for g in inference_grads if g is not None], axis=0)
-
-        first_moments = np.average(vectorized_grads)
-        second_moments = np.average(tf.square(vectorized_grads))
-        variances = second_moments - tf.square(first_moments)
-        inference_grad_snr_sq = tf.reduce_mean(tf.square(first_moments)) / tf.reduce_mean(variances)
-
-        print("grads = ", vectorized_grads)
-        print("1st moments  = ", first_moments)
-        print("2nd moments  = ", second_moments)
-        print("var ", variances)
-        print("SNR ", inference_grad_snr_sq)
-    # with tf.Session() as sess:
-    #     grads_ = sess.run(inference_grads)
-    #     print(grads_)
-
-
+    print("grads = ", vectorized_grads)
+    print("1st moments  = ", first_moments)
+    print("2nd moments  = ", second_moments)
+    print("var ", variances)
+    print("SNR ", inference_grad_snr_sq)
 
 if __name__ == "__main__":
 
