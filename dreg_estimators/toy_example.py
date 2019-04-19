@@ -38,6 +38,10 @@ from bayesquad.priors import Gaussian
 from bayesquad.quadrature import IntegrandModel
 from tensorflow.python.training import summary_io
 
+import pickle
+import seaborn as sns
+import matplotlib.pyplot as plt
+
 tfd = tfp.distributions
 flags = tf.flags
 
@@ -49,7 +53,7 @@ flags.DEFINE_integer("num_samples", 1, "The numer of K samples to use.")
 flags.DEFINE_integer("latent_dim", 1, "The dimension of the VAE latent space.")
 flags.DEFINE_float("learning_rate", 3e-4, "The learning rate for ADAM.")
 flags.DEFINE_integer("batch_size", 1, "The batch size.")
-flags.DEFINE_bool("using_BQ", True, "Whether or not you plan to use BQ to compute the ELBO function.")
+flags.DEFINE_bool("using_BQ", False, "Whether or not you plan to use BQ to compute the ELBO function.")
 
 tf.enable_eager_execution()
 
@@ -110,7 +114,7 @@ class ToyConditionalNormal(object):
         raw_input_shape = tf.shape(tensor_list)
         fcnet_input_shape = [tf.reduce_prod(raw_input_shape), input_dim]
         fcnet_inputs = tf.reshape(tensor_list, fcnet_input_shape)
-        print("fcnet_inputs shape:", fcnet_inputs.shape)
+        # print("fcnet_inputs shape:", fcnet_inputs.shape)
         out = self.fcnet(fcnet_inputs)
     else:
         print("CONDITION ON AN NDARRAY")
@@ -130,13 +134,12 @@ class ToyConditionalNormal(object):
 
     return out
 
-  def initialise_and_fix_network(self, some_data):
+  def initialise_and_fix_network(self, some_data, noise):
 
       mu = self.condition(some_data)
       # Set the network parameters to "close" to their optimal
-      noiseA = np.random.normal(loc=0, scale=0.01, size=(FLAGS.latent_dim, 1)).astype(np.float32)
-      noiseb = np.random.normal(loc=0, scale=0.01, size=(FLAGS.latent_dim,)).astype(np.float32)
 
+      (noiseA, noiseb) = noise
       A = np.ones(FLAGS.latent_dim) / 2. + noiseA
       b = np.eye(FLAGS.latent_dim) * (2 / 2.) + noiseb
       tf_A = tf.Variable(A.astype(np.float32).reshape(FLAGS.latent_dim, FLAGS.latent_dim))
@@ -144,8 +147,6 @@ class ToyConditionalNormal(object):
 
       self.fcnet.get_variables()[0].assign(tf_A)
       self.fcnet.get_variables()[1].assign(tf_b)
-
-      print(self.fcnet.get_variables())
 
   def __call__(self, *args, **kwargs):
     """Creates a normal distribution conditioned on the inputs."""
@@ -159,12 +160,16 @@ class ToyConditionalNormal(object):
     return tfd.Normal(loc=mu, scale=tf.eye(self.size)*(2/3.)), self.fcnet.get_variables()
 
 
-def toy_example():
+def toy_example(num_samples=None, noise=(0,0)):
+
+    if num_samples==None:
+        num_samples = FLAGS.num_samples
+
     with tf.GradientTape() as tape:
 
         train_xs, valid_xs, test_xs = utils.load_toy_data()
         batch_xs = train_xs[0:FLAGS.batch_size]
-        print("batch shape: ", batch_xs.shape)
+        # print("batch shape: ", batch_xs.shape)
 
         # set up your prior model, proposal and likelihood networks
         p_z = ToyPrior(mu_inital_value = 2., size=FLAGS.latent_dim, name="toy_prior")
@@ -180,14 +185,15 @@ def toy_example():
             use_bias=True,
             name="proposal")
 
-        # initialise the network parameters to near optimal
-        q_z.initialise_and_fix_network(batch_xs)
+        # initialise the network parameters to optimal (plus some specified N dist'ed noise)
+        q_z.initialise_and_fix_network(batch_xs, noise)
 
         # returns the Normal dist proposal, and the parameters (fixed to optimal A and b)
         proposal, inference_network_params = q_z(batch_xs, stop_gradient=False)
-        z = proposal.sample(sample_shape=[FLAGS.num_samples])
+
+        z = proposal.sample(sample_shape=[num_samples])
         # [num_samples, batch_size, latent_dim]
-        print("samples ", z.shape)
+        print("z samples ", z.shape)
 
         # returns a Normal dist conditioned on z
         likelihood = p_x_given_z(z)
@@ -195,24 +201,24 @@ def toy_example():
         # returns the Prior normal (p_z), and the prior parameter mu
         prior, mu = p_z()
 
-        # merge the parameters to compute gradients wrt
-        parameters = (inference_network_params[0], inference_network_params[1], mu)
-
         log_p_z = tf.reduce_sum(prior.log_prob(z), axis=-1)
         log_q_z = tf.reduce_sum(proposal.log_prob(z), axis=-1)
         log_p_x_given_z = tf.reduce_sum(likelihood.log_prob(batch_xs), axis=-1)
         log_weights = log_p_z + log_p_x_given_z - log_q_z
         log_sum_weight = tf.reduce_logsumexp(log_weights, axis=0)  # this converts back to IWAE estimator (log of the sum)
-        log_avg_weight = log_sum_weight - tf.log(tf.to_float(FLAGS.num_samples))
+        log_avg_weight = log_sum_weight - tf.log(tf.to_float(num_samples))
         inference_loss = -tf.reduce_mean(log_avg_weight)
+        print("inference_loss ", inference_loss)
 
+        parameters = (inference_network_params[0], inference_network_params[1], mu)
+        # print("near optimal parameters: ", parameters)
+        grads = tape.gradient(inference_loss, parameters)
 
         # Build the evidence lower bound (ELBO) or the negative loss
         # kl = tf.reduce_mean(tfd.kl_divergence(proposal, prior), axis=-1)  # analytic KL
         # log_sum_ll = tf.reduce_logsumexp(log_p_x_given_z, axis=0)  # this converts back to IWAE estimator (log of the sum)
-        # expected_log_likelihood = log_sum_ll - tf.log(tf.to_float(FLAGS.num_samples))
+        # expected_log_likelihood = log_sum_ll - tf.log(tf.to_float(num_samples))
         # KL_elbo = tf.reduce_mean(expected_log_likelihood - kl)
-
 
         if FLAGS.using_BQ:
 
@@ -263,25 +269,62 @@ def toy_example():
             print("BQ ", bq_elbo)
             print("ACTUAL ELBO ", brute_force_elbo)
 
+    return grads
+    # first_moments = np.average(vectorized_grads)
+    # print("first_moments  = ", first_moments )
+    # second_moments = np.average(tf.square(vectorized_grads))
+    # print("second_moments  = ", second_moments)
+    #
+    # variances = second_moments - tf.square(first_moments)
+    # inference_grad_snr_sq = tf.reduce_mean(tf.square(first_moments)) / tf.reduce_mean(variances)
+    # snr = tf.reduce_mean(tf.square(first_moments)) / tf.reduce_mean(variances)
+    #
+    # print("SNR = ", snr)
 
+def gradient_estimate_loop(num_estimates=None):
+    sns.set_style("whitegrid", {'axes.grid' : False})
 
-        # log_p_hat_mean = tf.reduce_mean(log_avg_weight)
-        print("inference_loss ", inference_loss)
+    param_keys = ["A", "b", "mu"]
+    gradient_estimates = {"A": {}, "b": {}, "mu": {}}
+    different_choices_of_K = [1, 3, 10, 100, 1000]
 
-        grads = tape.gradient(inference_loss, parameters)
-        vectorized_grads = [np.array(g).reshape(1, ) for g in grads]
-        print("GRADIENTS = ", vectorized_grads)
+    file_path = os.path.join("/home/paul/Software/DREG-data/Toy/", "gradient_estimates-10000.p")
 
-        # first_moments = np.average(vectorized_grads)
-        # print("first_moments  = ", first_moments )
-        # second_moments = np.average(tf.square(vectorized_grads))
-        # print("second_moments  = ", second_moments)
-        #
-        # variances = second_moments - tf.square(first_moments)
-        # inference_grad_snr_sq = tf.reduce_mean(tf.square(first_moments)) / tf.reduce_mean(variances)
-        # snr = tf.reduce_mean(tf.square(first_moments)) / tf.reduce_mean(variances)
-        #
-        # print("SNR = ", snr)
+    # # Just load the data and plot the graph
+    if num_estimates == None:
+        gradient_estimates = load_histogramdata()
+        for K in different_choices_of_K:
+            sns.distplot(gradient_estimates["b"][K], bins=200, kde=False)
+    else:
+
+        # Fix the noise away from the optimum
+        noiseA = np.random.normal(loc=0, scale=0.01, size=(FLAGS.latent_dim, 1)).astype(np.float32)
+        noiseb = np.random.normal(loc=0, scale=0.01, size=(FLAGS.latent_dim,)).astype(np.float32)
+
+        for K in different_choices_of_K:
+            for estimate_no in range(0, num_estimates):
+                if estimate_no % 100==0: print(estimate_no)
+                grads = toy_example(num_samples=K, noise=(np.abs(noiseA), np.abs(noiseb)))
+                vectorized_grads = [np.array(g).reshape(1, ) for g in grads]
+                for key, value in zip(param_keys, vectorized_grads):
+                    try:
+                        gradient_estimates[key][K].append(value[0])
+                    except KeyError:
+                        gradient_estimates[key][K] = [value[0]]
+            sns.distplot(gradient_estimates["b"][K], bins=200, kde=False)
+        with open(file_path, 'wb') as handle:
+            pickle.dump(gradient_estimates, handle, protocol=pickle.HIGHEST_PROTOCOL)
+
+    plt.xlim([-0.1, 0.3])
+    plt.title("IWAE gradient estimates")
+    plt.ylabel("p(delta_MK(b)")
+    plt.xlabel("delta_MK(b)")
+    plt.legend(["K = 1", "K = 3", "K = 10", "K = 100", "K = 1000"])
+    plt.show()
+
+def load_histogramdata(file_path):
+    with open(file_path, 'rb') as handle:
+        return pickle.load(handle)
 
 
 if __name__ == "__main__":
@@ -289,4 +332,6 @@ if __name__ == "__main__":
     ## FORCE TO USE THE CPU:
     os.environ['CUDA_VISIBLE_DEVICES'] = ""
 
-    toy_example()
+    # toy_example()
+
+    gradient_estimate_loop(num_estimates = 10000)
