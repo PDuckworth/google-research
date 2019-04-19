@@ -49,6 +49,7 @@ flags.DEFINE_integer("num_samples", 1, "The numer of K samples to use.")
 flags.DEFINE_integer("latent_dim", 1, "The dimension of the VAE latent space.")
 flags.DEFINE_float("learning_rate", 3e-4, "The learning rate for ADAM.")
 flags.DEFINE_integer("batch_size", 1, "The batch size.")
+flags.DEFINE_bool("using_BQ", True, "Whether or not you plan to use BQ to compute the ELBO function.")
 
 tf.enable_eager_execution()
 
@@ -191,7 +192,7 @@ def toy_example():
         # returns a Normal dist conditioned on z
         likelihood = p_x_given_z(z)
 
-        # returns the Prior normal (p_z), and the parameter mu
+        # returns the Prior normal (p_z), and the prior parameter mu
         prior, mu = p_z()
 
         # merge the parameters to compute gradients wrt
@@ -203,6 +204,8 @@ def toy_example():
         log_weights = log_p_z + log_p_x_given_z - log_q_z
         log_sum_weight = tf.reduce_logsumexp(log_weights, axis=0)  # this converts back to IWAE estimator (log of the sum)
         log_avg_weight = log_sum_weight - tf.log(tf.to_float(FLAGS.num_samples))
+        inference_loss = -tf.reduce_mean(log_avg_weight)
+
 
         # Build the evidence lower bound (ELBO) or the negative loss
         # kl = tf.reduce_mean(tfd.kl_divergence(proposal, prior), axis=-1)  # analytic KL
@@ -211,69 +214,59 @@ def toy_example():
         # KL_elbo = tf.reduce_mean(expected_log_likelihood - kl)
 
 
+        if FLAGS.using_BQ:
 
+            def get_log_joint(z):
+                return np.reshape(p_x_given_z(z).log_prob(batch_xs).numpy() + prior.log_prob(z).numpy(), (-1, 1))
 
-        def get_log_joint(z):
-            return np.reshape(p_x_given_z(z).log_prob(batch_xs).numpy() + prior.log_prob(z).numpy(), (-1, 1))
+            kernel = GPy.kern.RBF(1, variance=2, lengthscale=2)
+            kernel.variance.constrain_bounded(1e-5, 1e5)
+            bq_likelihood = GPy.likelihoods.Gaussian(variance=1e-1)
 
-        kernel = GPy.kern.RBF(1, variance=2, lengthscale=2)
-        kernel.variance.constrain_bounded(1e-5, 1e5)
-        bq_likelihood = GPy.likelihoods.Gaussian(variance=1e-1)
+            bq_prior = Gaussian(mean=proposal._loc.numpy().squeeze(), covariance=proposal._scale.numpy().item())
 
-        bq_prior = Gaussian(mean=proposal._loc.numpy().squeeze(), covariance=proposal._scale.numpy().item())
+            initial_x = bq_prior.sample(5)
+            initial_y = []
+            for point in initial_x:
+                initial_y.append(get_log_joint(np.atleast_2d(point)))
+            initial_y = np.concatenate(initial_y)
+            mean_function = NegativeQuadratic(1)
+            gpy_gp = GPy.core.GP(initial_x, initial_y, kernel=kernel, likelihood=bq_likelihood, mean_function=mean_function)
+            warped_gp = VanillaGP(gpy_gp)
+            bq_model = IntegrandModel(warped_gp, bq_prior)
 
-        initial_x = bq_prior.sample(5)
-        initial_y = []
-        for point in initial_x:
-            initial_y.append(get_log_joint(np.atleast_2d(point)))
-        initial_y = np.concatenate(initial_y)
-        mean_function = NegativeQuadratic(1)
-        gpy_gp = GPy.core.GP(initial_x, initial_y, kernel=kernel, likelihood=bq_likelihood, mean_function=mean_function)
-        warped_gp = VanillaGP(gpy_gp)
-        bq_model = IntegrandModel(warped_gp, bq_prior)
-
-        for i in range(10):
-            if i % 5 == 0:
-                gpy_gp.optimize_restarts(num_restarts=5)
-            failed = True
-            while failed:
-                try:
-                    batch = select_batch(bq_model, 1, KRIGING_BELIEVER)
-                    failed = False
-                except FloatingPointError:
+            for i in range(10):
+                if i % 5 == 0:
                     gpy_gp.optimize_restarts(num_restarts=5)
+                failed = True
+                while failed:
+                    try:
+                        batch = select_batch(bq_model, 1, KRIGING_BELIEVER)
+                        failed = False
+                    except FloatingPointError:
+                        gpy_gp.optimize_restarts(num_restarts=5)
 
-            X = np.array(batch)
-            Y = get_log_joint(X)
+                X = np.array(batch)
+                Y = get_log_joint(X)
 
-            bq_model.update(batch, Y)
+                bq_model.update(batch, Y)
 
-        gpy_gp.optimize_restarts(num_restarts=5)
+            gpy_gp.optimize_restarts(num_restarts=5)
 
-        bq_elbo = bq_model.integral_mean()
+            bq_elbo = bq_model.integral_mean()
 
-        import scipy.integrate
-        def integrand(z):
-            return get_log_joint(z) * np.exp(bq_prior.logpdf(np.atleast_2d(z)))
-        brute_force_elbo = scipy.integrate.quad(integrand, -10, 10)
+            import scipy.integrate
+            def integrand(z):
+                return get_log_joint(z) * np.exp(bq_prior.logpdf(np.atleast_2d(z)))
+            brute_force_elbo = scipy.integrate.quad(integrand, -10, 10)
 
-        # Set the network parameters to "close" to their optimal
-        # noiseA = np.random.normal(loc=0, scale=0.01, size=(FLAGS.latent_dim, 1)).astype(np.float32)
-        # noiseb = np.random.normal(loc=0, scale=0.01, size=(FLAGS.latent_dim,)).astype(np.float32)
+            print("BQ ", bq_elbo)
+            print("ACTUAL ELBO ", brute_force_elbo)
 
-        # inference_network_params = proposal.fcnet.get_variables()
 
-        # opt = tf.train.AdamOptimizer(FLAGS.learning_rate)
-        # inference_grads = opt.compute_gradients(inference_loss, var_list=inference_network_params)
-        # print("Grads, = ", inference_grads)
-
-        inference_loss = -tf.reduce_mean(log_avg_weight)
 
         # log_p_hat_mean = tf.reduce_mean(log_avg_weight)
         print("inference_loss ", inference_loss)
-
-        print("BQ ", bq_elbo)
-        print("ELBO ", brute_force_elbo)
 
         grads = tape.gradient(inference_loss, parameters)
         vectorized_grads = [np.array(g).reshape(1, ) for g in grads]
