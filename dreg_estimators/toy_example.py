@@ -205,10 +205,12 @@ def toy_example(num_samples=None, noise=(0,0)):
         log_q_z = tf.reduce_sum(proposal.log_prob(z), axis=-1)
         log_p_x_given_z = tf.reduce_sum(likelihood.log_prob(batch_xs), axis=-1)
         log_weights = log_p_z + log_p_x_given_z - log_q_z
-        log_sum_weight = tf.reduce_logsumexp(log_weights, axis=0)  # this converts back to IWAE estimator (log of the sum)
+
+        # This step is crucial for replicating the IWAE bound. log of the sum, NOT sum of the log (the VAE bound - where M increases)
+        log_sum_weight = tf.reduce_logsumexp(log_weights, axis=1)  # this sums over K samples, and returns us to IWAE estimator land
         log_avg_weight = log_sum_weight - tf.log(tf.to_float(num_samples))
         inference_loss = -tf.reduce_mean(log_avg_weight)
-        print("inference_loss ", inference_loss)
+        print("inference_loss ", inference_loss, log_weights.shape, log_sum_weight.shape, log_avg_weight.shape)
 
         parameters = (inference_network_params[0], inference_network_params[1], mu)
         # print("near optimal parameters: ", parameters)
@@ -288,7 +290,7 @@ def gradient_estimate_loop(num_estimates=None):
     gradient_estimates = {"A": {}, "b": {}, "mu": {}}
     different_choices_of_K = [1, 3, 10, 100, 1000]
 
-    file_path = os.path.join("/home/paul/Software/DREG-data/Toy/", "gradient_estimates-10000.p")
+    file_path = os.path.join("/home/paul/Software/DREG-data/Toy/", "gradient_estimates-1000.p")
 
     # # Just load the data and plot the graph
     if num_estimates == None:
@@ -334,4 +336,4 @@ if __name__ == "__main__":
 
     # toy_example()
 
-    gradient_estimate_loop(num_estimates = 10000)
+    gradient_estimate_loop(num_estimates = 2000)
