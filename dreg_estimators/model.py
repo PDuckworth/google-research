@@ -173,7 +173,7 @@ class ToyConditionalNormalLikelihood(object):
 
   def __call__(self, *args, **kwargs):
     """Creates a normal distribution (conditioned?) on the inputs."""
-    return tfd.Normal(loc=args, scale=tf.eye(self.size))
+    return tfd.Normal(loc=args[0], scale=tf.eye(self.size))
 
 
 class ToyPrior(object):
@@ -355,28 +355,25 @@ def iwae(p_z,
   """
   # alpha, beta, gamma, delta = cvs
   batch_size = tf.shape(observations)[0]
-  print("OBS SHAPE: ", observations.shape)
   proposal = q_z(observations, contexts, stop_gradient=False)
+
   # [num_samples, batch_size, latent_size]
-  print("Num SAMPLES: ", FLAGS.num_samples)
   z = proposal.sample(sample_shape=[FLAGS.num_samples])
 
   likelihood = p_x_given_z(z)
   prior = p_z(contexts)
-  log_p_z = tf.reduce_sum(prior.log_prob(z), axis=-1)
+  log_p_z = tf.reduce_sum(prior.log_prob(z), axis=-1)  # [num_samples, batch_size]
 
   # Before reduce_sum is [num_samples, batch_size, latent_dim].
   # Sum over the latent dim.
-  log_q_z = tf.reduce_sum(proposal.log_prob(z), axis=-1)
+  log_q_z = tf.reduce_sum(proposal.log_prob(z), axis=-1)  # [num_samples, batch_size]
+  # Before reduce_sum is [num_samples, batch_size, latent_dim].
+  log_p_x_given_z = tf.reduce_sum(likelihood.log_prob(observations), axis=-1)  # [num_samples, batch_size]
 
-  # Before reduce_sum is  [num_samples, batch_size, latent_dim].
-  # Sum over latent dim.
-  log_p_x_given_z = tf.reduce_sum(likelihood.log_prob(observations), axis=-1)
-  log_weights = log_p_z + log_p_x_given_z - log_q_z
-  log_sum_weight = tf.reduce_logsumexp(log_weights, axis=0)   # this converts back to IWAE estimator (log of the sum)
+  log_weights = log_p_z + log_p_x_given_z - log_q_z    # [num_samples, batch_size]
+  log_sum_weight = tf.reduce_logsumexp(log_weights, axis=0)   # sum over samples before log converts back to IWAE estimator (log of the sum)
   log_avg_weight = log_sum_weight - tf.log(tf.to_float(num_samples))
-
-  log_p_hat_mean = tf.reduce_mean(log_avg_weight)
+  # print("shapes", log_p_z.shape, log_p_x_given_z.shape, log_q_z.shape, log_weights.shape, log_sum_weight.shape)
 
   normalized_weights = tf.stop_gradient(tf.nn.softmax(log_weights, axis=0))
 
@@ -460,7 +457,7 @@ def iwae(p_z,
           sq_normalized_weights * stopped_log_weights, axis=0) -
       (num_samples - 1) * tf.reduce_sum(
           tf.transpose(loo_normalized_weights) * stopped_log_weights, axis=0))
-  #
+
   # # Compute control variates
   # loo_baseline = tf.expand_dims(tf.transpose(log_weights), -1)
   # loo_baseline = tf.tile(loo_baseline, [1, 1, num_samples])

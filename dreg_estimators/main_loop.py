@@ -80,7 +80,6 @@ flags.DEFINE_integer("hidden_layers", 2,
 
 FLAGS = flags.FLAGS
 
-
 def create_logging_hook(metrics):
 
   def summary_formatter(d):
@@ -222,7 +221,7 @@ def main(unused_argv):
         var_calc = FLAGS.var_calc.split(",")
         for estimator in var_calc:
           var_calc_inference_grads = opt.compute_gradients(
-              -tf.reduce_mean(estimators[estimator][-1]),
+              -tf.reduce_mean(estimators[estimator][-1]),  # inference model loss wrt inference params phi
               var_list=inference_network_params)
           (var_calc_inference_ema_op, var_calc_inference_grad_variance,
            var_calc_inference_grad_snr_sq
@@ -245,7 +244,7 @@ def main(unused_argv):
 
     tf.summary.scalar("log_p_hat/train", log_p_hat_mean)
     tf.summary.scalar("estimators/elbo", estimators["elbo"]) # I added this - why does it not match log_p_hat?
-    tf.summary.scalar("estimators/difference", estimators["elbo"]-log_p_hat_mean)
+    # tf.summary.scalar("estimators/difference", estimators["elbo"]-log_p_hat_mean)
 
     # Define an op to compute the paired t statistic (for bias checking)
     iwae_inference_grads = opt.compute_gradients(

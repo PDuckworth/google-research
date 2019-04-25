@@ -37,7 +37,7 @@ flags.DEFINE_enum("estimator", "iwae", [
 ], "Estimator type to use.")
 flags.DEFINE_float("alpha", 0.9, "Weighting for DReG(alpha)")
 flags.DEFINE_integer("batch_size", 256, "The batch size.")
-flags.DEFINE_integer("num_samples", 2, "The numer of K samples to use.")
+flags.DEFINE_integer("num_samples", 64, "The numer of K samples to use.")
 flags.DEFINE_integer("latent_dim", 1, "The dimension of the VAE latent space.")
 flags.DEFINE_float("learning_rate", 3e-4, "The learning rate for ADAM.")
 flags.DEFINE_integer("max_steps", int(5e4), "The number of steps to train for.")
@@ -96,6 +96,7 @@ def main(unused_argv):
       train_xs, valid_xs, test_xs = utils.load_omniglot()
     elif FLAGS.dataset == "toy":
       train_xs, valid_xs, test_xs = utils.load_toy_data()
+
     print("dataset = ", train_xs.shape)
 
     # Placeholder for input mnist digits.

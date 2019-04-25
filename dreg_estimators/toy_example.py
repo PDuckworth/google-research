@@ -66,7 +66,7 @@ class ToyConditionalNormalLikelihood(object):
     self.name = name
 
   def __call__(self, *args, **kwargs):
-    return tfd.Normal(loc=args, scale=tf.eye(self.size))
+    return tfd.Normal(loc=args[0], scale=tf.eye(self.size))
 
 class ToyPrior(object):
   def __init__(self, mu_inital_value = 2., size = 1, name="toy_prior"):
@@ -130,7 +130,7 @@ class ToyConditionalNormal(object):
     # print("5. ", fcnet_input_shape)
     # print("6. ", fcnet_inputs.shape)
     # print("input ", fcnet_inputs)
-    # print("7. ", out)
+    # print("out ", out.shape)
 
     return out
 
@@ -168,8 +168,7 @@ def toy_example(num_samples=None, noise=(0,0)):
     with tf.GradientTape() as tape:
 
         train_xs, valid_xs, test_xs = utils.load_toy_data()
-        batch_xs = train_xs[0:FLAGS.batch_size]
-        # print("batch shape: ", batch_xs.shape)
+        batch_xs = train_xs[0:FLAGS.batch_size]  # [batch_size, input_dim]
 
         # set up your prior model, proposal and likelihood networks
         p_z = ToyPrior(mu_inital_value = 2., size=FLAGS.latent_dim, name="toy_prior")
@@ -201,16 +200,16 @@ def toy_example(num_samples=None, noise=(0,0)):
         # returns the Prior normal (p_z), and the prior parameter mu
         prior, mu = p_z()
 
-        log_p_z = tf.reduce_sum(prior.log_prob(z), axis=-1)
-        log_q_z = tf.reduce_sum(proposal.log_prob(z), axis=-1)
-        log_p_x_given_z = tf.reduce_sum(likelihood.log_prob(batch_xs), axis=-1)
-        log_weights = log_p_z + log_p_x_given_z - log_q_z
+        log_p_z = tf.reduce_sum(prior.log_prob(z), axis=-1)   # [num_samples, batch_size]
+        log_q_z = tf.reduce_sum(proposal.log_prob(z), axis=-1)   # [num_samples, batch_size]
+        log_p_x_given_z = tf.reduce_sum(likelihood.log_prob(batch_xs), axis=-1)  # [num_samples, batch_size]
+        log_weights = log_p_z + log_p_x_given_z - log_q_z  # [num_samples, batch_size]
 
         # This step is crucial for replicating the IWAE bound. log of the sum, NOT sum of the log (the VAE bound - where M increases)
-        log_sum_weight = tf.reduce_logsumexp(log_weights, axis=1)  # this sums over K samples, and returns us to IWAE estimator land
+        log_sum_weight = tf.reduce_logsumexp(log_weights, axis=0)  # this sums over K samples, and returns us to IWAE estimator land
         log_avg_weight = log_sum_weight - tf.log(tf.to_float(num_samples))
         inference_loss = -tf.reduce_mean(log_avg_weight)
-        print("inference_loss ", inference_loss, log_weights.shape, log_sum_weight.shape, log_avg_weight.shape)
+        # print("shapes", log_p_z.shape, log_p_x_given_z.shape, log_q_z.shape, log_weights.shape, log_sum_weight.shape, inference_loss.shape)
 
         parameters = (inference_network_params[0], inference_network_params[1], mu)
         # print("near optimal parameters: ", parameters)
@@ -288,13 +287,13 @@ def gradient_estimate_loop(num_estimates=None):
 
     param_keys = ["A", "b", "mu"]
     gradient_estimates = {"A": {}, "b": {}, "mu": {}}
-    different_choices_of_K = [1, 3, 10, 100, 1000]
+    different_choices_of_K = [10, 100, 1000]
 
-    file_path = os.path.join("/home/paul/Software/DREG-data/Toy/", "gradient_estimates-1000.p")
+    file_path = os.path.join("/home/paul/Software/DREG-data/Toy/", "snr_estimates.p")
 
     # # Just load the data and plot the graph
     if num_estimates == None:
-        gradient_estimates = load_histogramdata()
+        gradient_estimates = load_histogramdata(file_path)
         for K in different_choices_of_K:
             sns.distplot(gradient_estimates["b"][K], bins=200, kde=False)
     else:
@@ -308,12 +307,14 @@ def gradient_estimate_loop(num_estimates=None):
                 if estimate_no % 100==0: print(estimate_no)
                 grads = toy_example(num_samples=K, noise=(np.abs(noiseA), np.abs(noiseb)))
                 vectorized_grads = [np.array(g).reshape(1, ) for g in grads]
+
                 for key, value in zip(param_keys, vectorized_grads):
                     try:
                         gradient_estimates[key][K].append(value[0])
                     except KeyError:
                         gradient_estimates[key][K] = [value[0]]
             sns.distplot(gradient_estimates["b"][K], bins=200, kde=False)
+
         with open(file_path, 'wb') as handle:
             pickle.dump(gradient_estimates, handle, protocol=pickle.HIGHEST_PROTOCOL)
 
@@ -336,4 +337,4 @@ if __name__ == "__main__":
 
     # toy_example()
 
-    gradient_estimate_loop(num_estimates = 2000)
+    gradient_estimate_loop(num_estimates = 100)
