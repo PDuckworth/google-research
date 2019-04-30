@@ -188,7 +188,7 @@ class ToyPrior(object):
     self.name = name
     self.mu_inital_value = mu_inital_value
     self.mu = tf.Variable(name="mu", initial_value=self.mu_inital_value)
-    print(self.mu)
+    # print(self.mu)
 
   def get_parameter_mu(self):
     return self.mu
@@ -237,6 +237,8 @@ class ToyConditionalNormal(object):
     # Reshape outputs to the original shape.
     output_size = tf.concat([raw_input_shape, [1]], axis=0)
     out = tf.reshape(outs, output_size)
+
+    # print("out.", out)
     return out
     # mu, sigma = tf.split(outs, 2, axis=1)
     # return mu, sigma
@@ -399,24 +401,29 @@ def iwae(p_z,
           init = tf.initialize_all_variables()
           sess.run(init)
           prior = prior()
-
-          return np.reshape(likelihood.log_prob(observations).eval() + prior.log_prob(z).eval(), (-1, 1))
+          # log_prob = likelihood.log_prob(observations.reshape(1,2)).eval()
+          log_prob = likelihood.log_prob(observations).eval()
+          return log_prob + prior.log_prob(z).eval()
 
   kernel = GPy.kern.RBF(1, variance=2, lengthscale=2)
   bq_likelihood = GPy.likelihoods.Gaussian(variance=1e-5)
 
   def get_bq_estimate(loc, scale, observations):
-      bq_prior = Gaussian(mean=loc.squeeze(), covariance=scale.item())
 
-      initial_x = np.array([[0.1]])
-      initial_y = []
-      for point in initial_x:
-          initial_y.append(get_log_joint(np.atleast_2d(point), observations))
-      initial_y = np.concatenate(initial_y)
+      bq_prior = Gaussian(mean=loc.squeeze(), covariance=scale.item())
+      initial_x = bq_prior.sample(5)
+
+      # initial_y = []
+      # for point in initial_x:
+      #     initial_y.append(get_log_joint(np.atleast_2d(point), observations))
+      # initial_y = np.concatenate(initial_y)
+
+      initial_y = get_log_joint(np.atleast_2d(initial_x), observations)
+
       mean_function = NegativeQuadratic(1)
       gpy_gp = GPy.core.GP(initial_x, initial_y, kernel=kernel, likelihood=bq_likelihood, mean_function=mean_function)
       warped_gp = VanillaGP(gpy_gp)
-      bq_model = IntegrandModel(warped_gp, bq_prior)
+      # bq_model = IntegrandModel(warped_gp, bq_prior)
 
       # for i in range(10):
       #     if i % 5 == 0:
@@ -437,6 +444,7 @@ def iwae(p_z,
       gpy_gp.optimize()
 
       return gpy_gp.mean_function.mu, gpy_gp.mean_function.m_0, gpy_gp.mean_function.omega, gpy_gp.kern.lengthscale.values[0], gpy_gp.kern.variance.values[0], gpy_gp.X, warped_gp.underlying_gp.K_inv_Y
+
 
   mu, m_0, omega, kernel_lengthscale, kernel_variance, gp_X, K_inv_Y = tf.py_func(get_bq_estimate, [proposal._loc, proposal._scale, observations], [tf.float64, tf.float64, tf.float64, tf.float64, tf.float64, tf.float64, tf.float64])
   # mu, m_0, omega, kernel_lengthscale, kernel_variance, gp_X, K_inv_Y = get_bq_estimate(proposal._loc, proposal._scale)

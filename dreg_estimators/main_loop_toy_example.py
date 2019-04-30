@@ -34,6 +34,9 @@ from bayesquad.gps import VanillaGP
 from bayesquad.priors import Gaussian
 from bayesquad.quadrature import IntegrandModel
 from tensorflow.python.training import summary_io
+import warnings
+
+warnings.filterwarnings("ignore")
 
 tfd = tfp.distributions
 flags = tf.flags
@@ -243,6 +246,7 @@ def main(unused_argv):
 
       while cur_step < FLAGS.max_steps and not sess.should_stop():
         n_epoch += 1
+        print(">>>>", n_epoch)
 
         random.shuffle(indices)
 

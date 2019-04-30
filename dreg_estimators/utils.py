@@ -149,7 +149,7 @@ def load_toy_data(datapoints = 200, dim=1):
   data = np.random.normal(loc=TRUE_MEAN, scale=TRUE_SCALE, size=(NUM_DATA_POINTS, 1)).astype(np.float32)
 
   # Add a new axis so that tf can evaluate the log probability at each data point for many parameter values.
-  train_xs = data[:1024]
+  train_xs = data[:100]
   test_xs = data[:512]
   valid_xs = data[:512]
 
