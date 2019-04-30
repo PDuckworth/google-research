@@ -20,12 +20,19 @@ from __future__ import division
 from __future__ import print_function
 import os
 import random
+
+import GPy
 import numpy as np
 import tensorflow as tf
 import tensorflow_probability as tfp
 
 import model as model
 import utils as utils
+from bayesquad.batch_selection import select_batch, KRIGING_BELIEVER
+from bayesquad.gp_prior_means import NegativeQuadratic
+from bayesquad.gps import VanillaGP
+from bayesquad.priors import Gaussian
+from bayesquad.quadrature import IntegrandModel
 from tensorflow.python.training import summary_io
 
 tfd = tfp.distributions
@@ -88,7 +95,6 @@ def create_logging_hook(metrics):
 def main(unused_argv):
   # proposal_hidden_dims = [20]
   # likelihood_hidden_dims = [0]
-
   with tf.Graph().as_default():
     if FLAGS.dataset in ["mnist", "struct_mnist"]:
       train_xs, valid_xs, test_xs = utils.load_mnist()
@@ -115,9 +121,12 @@ def main(unused_argv):
         FLAGS.num_samples, [], # [alpha, beta, gamma, delta],
         contexts=None)
 
+    # actual_proposal = proposal(observations_ph)
+
     print("VARS: ", proposal.fcnet.get_variables())
     log_p_hat, neg_model_loss, neg_inference_loss = estimators[FLAGS.estimator]
     elbo = estimators["elbo"]
+    # bq = estimators["bq"]
 
     model_loss = -tf.reduce_mean(neg_model_loss)
     inference_loss = -tf.reduce_mean(neg_inference_loss)
@@ -133,6 +142,8 @@ def main(unused_argv):
     # Compute and apply the gradients, summarizing the gradient variance.
     global_step = tf.train.get_or_create_global_step()
     opt = tf.train.AdamOptimizer(FLAGS.learning_rate)
+
+    inference_loss = estimators['bq_loss']
 
     cv_grads = []
 
@@ -253,8 +264,8 @@ def main(unused_argv):
           run_eval(cur_step, "test")
           run_eval(cur_step, "valid")
 
-          # var_names = ["theta", "A    ", "b    "]
-          var_names = ["A    ", "b    "]
+          var_names = ["theta", "A    ", "b    "]
+          # var_names = ["A    ", "b    "]
           for m, (i,j) in enumerate(grads_):
             print(var_names[m],": grad, val: ", i, j)
 

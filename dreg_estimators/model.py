@@ -19,10 +19,16 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
+import GPy
 import numpy as np
 import sonnet as snt
 import tensorflow as tf
 import tensorflow_probability as tfp
+from bayesquad.batch_selection import select_batch, KRIGING_BELIEVER
+from bayesquad.gp_prior_means import NegativeQuadratic
+from bayesquad.gps import VanillaGP
+from bayesquad.priors import Gaussian
+from bayesquad.quadrature import IntegrandModel
 
 tfd = tfp.distributions
 FLAGS = tf.flags.FLAGS
@@ -380,6 +386,78 @@ def iwae(p_z,
   # Compute gradient estimators
   model_loss = log_avg_weight
   estimators = {}
+
+  def get_log_joint(z):
+      return np.reshape(p_x_given_z(tf.cast(z, tf.float32)).log_prob(observations) + prior.log_prob(z), (-1, 1))
+
+  kernel = GPy.kern.RBF(1, variance=2, lengthscale=2)
+  bq_likelihood = GPy.likelihoods.Gaussian(variance=1e-5)
+
+
+  def get_bq_estimate(loc, scale):
+      bq_prior = Gaussian(mean=loc.squeeze(), covariance=scale.item())
+
+      initial_x = bq_prior.sample(5)
+      initial_y = []
+      for point in initial_x:
+          initial_y.append(get_log_joint(np.atleast_2d(point)))
+      initial_y = np.concatenate(initial_y)
+      mean_function = NegativeQuadratic(1)
+      gpy_gp = GPy.core.GP(initial_x, initial_y, kernel=kernel, likelihood=bq_likelihood, mean_function=mean_function)
+      warped_gp = VanillaGP(gpy_gp)
+      bq_model = IntegrandModel(warped_gp, bq_prior)
+
+      # for i in range(10):
+      #     if i % 5 == 0:
+      #         gpy_gp.optimize_restarts(num_restarts=5)
+      #     failed = True
+      #     while failed:
+      #         try:
+      #             batch = select_batch(bq_model, 1, KRIGING_BELIEVER)
+      #             failed = False
+      #         except FloatingPointError:
+      #             gpy_gp.optimize_restarts(num_restarts=5)
+      #
+      #     X = np.array(batch)
+      #     Y = get_log_joint(X)
+      #
+      #     bq_model.update(batch, Y)
+
+      gpy_gp.optimize_restarts(num_restarts=5)
+
+      return gpy_gp.mean_function.mu, gpy_gp.mean_function.m_0, gpy_gp.mean_function.omega, gpy_gp.kern.lengthscale.values[0], gpy_gp.kern.variance.values[0], gpy_gp.X, warped_gp.underlying_gp.K_inv_Y
+
+  mu, m_0, omega, kernel_lengthscale, kernel_variance, gp_X, K_inv_Y = tf.py_func(get_bq_estimate, [proposal._loc, proposal._scale], [tf.float32, tf.float32, tf.float32, tf.float32, tf.float32, tf.float32, tf.float32])
+
+  dimensions = 1
+
+  mu_diff = proposal._loc - mu
+  Lambda = tf.diag(omega ** -2)
+  Lambda = tf.cast(Lambda, tf.float32)
+
+  quadratic_form_expectation = tf.trace(Lambda @ proposal._scale * tf.eye(dimensions)) + tf.transpose(mu_diff) @ Lambda @ mu_diff
+
+  prior_mean_integral = (m_0 - 0.5 * quadratic_form_expectation)
+
+  kernel_normalising_constant = (2 * np.pi * kernel_lengthscale) ** dimensions / 2
+
+  multivariate_normal = tfp.distributions.MultivariateNormalFullCovariance(loc=proposal._loc,
+                                                                           covariance_matrix=kernel_lengthscale * tf.eye(
+                                                                               dimensions) + proposal._scale * tf.eye(dimensions))
+
+  # TODO Make this its own function
+  int_k_pi = kernel_variance \
+             * kernel_normalising_constant \
+             * tf.exp(multivariate_normal.log_prob(gp_X))
+
+  integral_mean = int_k_pi @ K_inv_Y
+
+  bq_elbo = integral_mean + prior_mean_integral
+
+  proposal_entropy = proposal.entropy()
+
+  estimators['bq_loss'] = - bq_elbo - proposal_entropy
+
 
   # Build the evidence lower bound (ELBO) or the negative loss
   kl = tf.reduce_mean(tfd.kl_divergence(proposal, prior), axis=-1)  # analytic KL
