@@ -43,14 +43,14 @@ flags = tf.flags
 
 flags.DEFINE_enum("estimator", "iwae", [
     "iwae", "rws", "stl", "dreg", "dreg-cv", "rws-dreg", "rws-dreg-norm",
-    "dreg-norm", "jk", "jk-dreg", "dreg-alpha"
+    "dreg-norm", "jk", "jk-dreg", "dreg-alpha", "bq"
 ], "Estimator type to use.")
 flags.DEFINE_float("alpha", 0.9, "Weighting for DReG(alpha)")
 flags.DEFINE_integer("batch_size", 256, "The batch size.")
 flags.DEFINE_integer("num_samples", 64, "The numer of K samples to use.")
 flags.DEFINE_integer("latent_dim", 1, "The dimension of the VAE latent space.")
 flags.DEFINE_float("learning_rate", 3e-4, "The learning rate for ADAM.")
-flags.DEFINE_integer("max_steps", int(5e4), "The number of steps to train for.")
+flags.DEFINE_integer("max_steps", int(1e5), "The number of steps to train for.")
 flags.DEFINE_integer("summarize_every", 100,
                      "Number of steps between summaries.")
 flags.DEFINE_string("logdir", "/home/paul/Software/DREG-data/Toy/",
@@ -135,29 +135,30 @@ def main(unused_argv):
     inference_loss = -tf.reduce_mean(neg_inference_loss)
     log_p_hat_mean = tf.reduce_mean(log_p_hat)
 
+    if FLAGS.estimator == "bq":
+        _, _, inference_loss = estimators['bq']
+
     # this is over K samples
     print("INFERENCE LOSS SHAPE = ", neg_inference_loss.shape)
 
     model_params = prior.get_parameter_mu()
     print(model_params)
-    inference_network_params = proposal.fcnet.get_variables()
+    inference_params = proposal.fcnet.get_variables()
 
     # Compute and apply the gradients, summarizing the gradient variance.
     global_step = tf.train.get_or_create_global_step()
     opt = tf.train.AdamOptimizer(FLAGS.learning_rate)
 
-    inference_loss = estimators['bq_loss']
-
     cv_grads = []
 
     model_grads = opt.compute_gradients(model_loss, var_list=model_params)
     # inference model (encoder) params are just A and b. (Ax+b)
-    inference_grads = opt.compute_gradients(inference_loss, var_list=inference_network_params)
+    inference_grads = opt.compute_gradients(inference_loss, var_list=inference_params)
 
     grads = model_grads + inference_grads #+ cv_grads
 
     model_ema_op, model_grad_variance, _ = (utils.summarize_grads(model_grads))
-    print("grads = ", grads)
+    print("grads = ", model_grads[0])
     inference_ema_op, inference_grad_variance, inference_grad_snr_sq = (utils.summarize_grads(inference_grads))
 
     ema_ops = [model_ema_op, inference_ema_op]
@@ -173,13 +174,17 @@ def main(unused_argv):
     #     tf.summary.histogram("phi_grads/" + variable.name, gradient)
     #     tf.summary.histogram("phi_vars/" + variable.name, variable)
 
-    tf.summary.scalar("estimators/elbo", elbo)
-    tf.summary.scalar("estimators/difference", elbo-log_p_hat_mean)
+    tf.summary.scalar("params/b", tf.reshape(inference_params[1], ()))
+    tf.summary.scalar("params/A", tf.reshape(inference_params[0], ()))
+    tf.summary.scalar("params/mu", model_params)
 
-    # tf.summary.scalar("phi_grad/%s" % FLAGS.estimator, inference_ema_op)
-    tf.summary.scalar("phi_grad_variance/%s" % FLAGS.estimator, inference_grad_variance)
+    tf.summary.scalar("gradients/A", tf.reshape(inference_grads[0][0], ()))
+    tf.summary.scalar("gradients/b", tf.reshape(inference_grads[1][0], ()))
+    tf.summary.scalar("gradients/mu", model_grads[0][0])
 
-    tf.summary.scalar("model_grad", model_grad_variance)
+    tf.summary.scalar("grad_variance/phi", inference_grad_variance)
+    tf.summary.scalar("grad_variance/model", model_grad_variance)
+
     # tf.summary.scalar("inference_grad_snr_sq/%s" % FLAGS.estimator, inference_grad_snr_sq)
 
     tf.summary.scalar("log_p_hat/train", log_p_hat_mean)
@@ -265,8 +270,8 @@ def main(unused_argv):
 
         if n_epoch % 10 == 0:
           print("epoch #", n_epoch)
-          run_eval(cur_step, "test")
-          run_eval(cur_step, "valid")
+          run_eval(cur_step, "test") # , FLAGS.batch_size)
+          # run_eval(cur_step, "valid", FLAGS.batch_size)
 
           var_names = ["theta", "A    ", "b    "]
           # var_names = ["A    ", "b    "]

@@ -390,96 +390,112 @@ def iwae(p_z,
   model_loss = log_avg_weight
   estimators = {}
 
-  def get_log_joint(z, observations):
-      sess = tf.Session()
-      with sess.as_default():
+  if FLAGS.estimator == "bq":
 
-          float_z = tf.cast(z, tf.float32)
-          likelihood = p_x_given_z(float_z)
-          prior = ToyPrior(mu_inital_value = 2., size = FLAGS.latent_dim, name="toy_prior")
+      def get_log_joint(z, observations):
+          sess = tf.Session()
+          with sess.as_default():
 
-          init = tf.initialize_all_variables()
-          sess.run(init)
-          prior = prior()
-          # log_prob = likelihood.log_prob(observations.reshape(1,2)).eval()
-          log_prob = likelihood.log_prob(observations).eval()
-          return log_prob + prior.log_prob(z).eval()
+              float_z = tf.reshape(tf.cast(z, tf.float32), (batch_size, FLAGS.latent_dim))
+              print(float_z)
+              likelihood = p_x_given_z(float_z)  # condition the likelihood on the z
+              prior = ToyPrior(mu_inital_value = 2., size = FLAGS.latent_dim, name="toy_prior")
+              init = tf.initialize_all_variables()
+              sess.run(init)
 
-  kernel = GPy.kern.RBF(1, variance=2, lengthscale=2)
-  bq_likelihood = GPy.likelihoods.Gaussian(variance=1e-5)
+              prior = prior()
+              # log_prob = likelihood.log_prob(observations.reshape(1,2)).eval()
+              print("like", likelihood._loc, likelihood._scale)
 
-  def get_bq_estimate(loc, scale, observations):
+              log_prob = likelihood.log_prob(observations)
 
-      bq_prior = Gaussian(mean=loc.squeeze(), covariance=scale.item())
-      initial_x = bq_prior.sample(5)
+              print("logprob", log_prob)
+              log_prior = tf.reshape(prior.log_prob(z), (batch_size, FLAGS.latent_dim))
 
-      # initial_y = []
-      # for point in initial_x:
-      #     initial_y.append(get_log_joint(np.atleast_2d(point), observations))
-      # initial_y = np.concatenate(initial_y)
+              print("prior", log_prior)
+              return log_prob.eval() + log_prior.eval()
 
-      initial_y = get_log_joint(np.atleast_2d(initial_x), observations)
+      kernel = GPy.kern.RBF(1, variance=2, lengthscale=2)
+      bq_likelihood = GPy.likelihoods.Gaussian(variance=1e-5)
 
-      mean_function = NegativeQuadratic(1)
-      gpy_gp = GPy.core.GP(initial_x, initial_y, kernel=kernel, likelihood=bq_likelihood, mean_function=mean_function)
-      warped_gp = VanillaGP(gpy_gp)
-      # bq_model = IntegrandModel(warped_gp, bq_prior)
+      def get_bq_estimate(loc, scale, observations):
 
-      # for i in range(10):
-      #     if i % 5 == 0:
-      #         gpy_gp.optimize_restarts(num_restarts=5)
-      #     failed = True
-      #     while failed:
-      #         try:
-      #             batch = select_batch(bq_model, 1, KRIGING_BELIEVER)
-      #             failed = False
-      #         except FloatingPointError:
-      #             gpy_gp.optimize_restarts(num_restarts=5)
-      #
-      #     X = np.array(batch)
-      #     Y = get_log_joint(X)
-      #
-      #     bq_model.update(batch, Y)
+          print("proposal / bq prior>>", loc, scale)
+          bq_prior = Gaussian(mean=loc.squeeze(), covariance=scale.item())
+          initial_x = bq_prior.sample(1)  # 1 sample from each proposal distribution in the batch
 
-      gpy_gp.optimize()
+          # initial_y = []
+          # for point in initial_x:
+          #     initial_y.append(get_log_joint(np.atleast_2d(point), observations))
+          # initial_y = np.concatenate(initial_y)
 
-      return gpy_gp.mean_function.mu, gpy_gp.mean_function.m_0, gpy_gp.mean_function.omega, gpy_gp.kern.lengthscale.values[0], gpy_gp.kern.variance.values[0], gpy_gp.X, warped_gp.underlying_gp.K_inv_Y
+          print("obs", observations)
+          print("initial_x", initial_x)
+          initial_y = get_log_joint(np.atleast_2d(initial_x), observations)
+          print("initial_y", initial_y)
+
+          mean_function = NegativeQuadratic(1)
+
+          gpy_gp = GPy.core.GP(initial_x, initial_y, kernel=kernel, likelihood=bq_likelihood, mean_function=mean_function)
+          warped_gp = VanillaGP(gpy_gp)
+          # bq_model = IntegrandModel(warped_gp, bq_prior)
+
+          # for i in range(10):
+          #     if i % 5 == 0:
+          #         gpy_gp.optimize_restarts(num_restarts=5)
+          #     failed = True
+          #     while failed:
+          #         try:
+          #             batch = select_batch(bq_model, 1, KRIGING_BELIEVER)
+          #             failed = False
+          #         except FloatingPointError:
+          #             gpy_gp.optimize_restarts(num_restarts=5)
+          #
+          #     X = np.array(batch)
+          #     Y = get_log_joint(X)
+          #
+          #     bq_model.update(batch, Y)
+
+          gpy_gp.optimize()
+
+          return gpy_gp.mean_function.mu, gpy_gp.mean_function.m_0, gpy_gp.mean_function.omega, gpy_gp.kern.lengthscale.values[0], gpy_gp.kern.variance.values[0], gpy_gp.X, warped_gp.underlying_gp.K_inv_Y
 
 
-  mu, m_0, omega, kernel_lengthscale, kernel_variance, gp_X, K_inv_Y = tf.py_func(get_bq_estimate, [proposal._loc, proposal._scale, observations], [tf.float64, tf.float64, tf.float64, tf.float64, tf.float64, tf.float64, tf.float64])
-  # mu, m_0, omega, kernel_lengthscale, kernel_variance, gp_X, K_inv_Y = get_bq_estimate(proposal._loc, proposal._scale)
+      mu, m_0, omega, kernel_lengthscale, kernel_variance, gp_X, K_inv_Y = tf.py_func(get_bq_estimate, [proposal._loc, proposal._scale, observations], [tf.float64, tf.float64, tf.float64, tf.float64, tf.float64, tf.float64, tf.float64])
+      # mu, m_0, omega, kernel_lengthscale, kernel_variance, gp_X, K_inv_Y = get_bq_estimate(proposal._loc, proposal._scale)
 
-  dimensions = 1
+      dimensions = 1
 
-  mu_diff = proposal._loc - tf.expand_dims(tf.cast(mu, tf.float32), 1)
+      mu_diff = proposal._loc - tf.expand_dims(tf.cast(mu, tf.float32), 1)
 
-  Lambda = tf.diag(omega ** -2)
-  Lambda = tf.cast(Lambda, tf.float32)
+      Lambda = tf.diag(omega ** -2)
+      Lambda = tf.cast(Lambda, tf.float32)
 
-  quadratic_form_expectation = tf.trace(Lambda @ proposal._scale * tf.eye(dimensions)) + tf.transpose(
-      mu_diff) @ Lambda @ mu_diff
+      quadratic_form_expectation = tf.trace(Lambda @ proposal._scale * tf.eye(dimensions)) + tf.transpose(
+          mu_diff) @ Lambda @ mu_diff
 
-  prior_mean_integral = (tf.cast(m_0, tf.float32) - 0.5 * quadratic_form_expectation)
+      prior_mean_integral = (tf.cast(m_0, tf.float32) - 0.5 * quadratic_form_expectation)
 
-  kernel_normalising_constant = (2 * np.pi * tf.cast(kernel_lengthscale, tf.float32)) ** dimensions / 2
+      kernel_normalising_constant = (2 * np.pi * tf.cast(kernel_lengthscale, tf.float32)) ** dimensions / 2
 
-  cov_matrix = tf.cast(kernel_lengthscale, tf.float32) * tf.eye(dimensions) + proposal._scale * tf.eye(dimensions)
+      cov_matrix = tf.cast(kernel_lengthscale, tf.float32) * tf.eye(dimensions) + proposal._scale * tf.eye(dimensions)
 
-  multivariate_normal = tfp.distributions.MultivariateNormalFullCovariance(loc=proposal._loc,
-                                                                           covariance_matrix=cov_matrix)
+      multivariate_normal = tfp.distributions.MultivariateNormalFullCovariance(loc=proposal._loc,
+                                                                               covariance_matrix=cov_matrix)
 
-  # TODO Make this its own function
-  int_k_pi = tf.cast(kernel_variance, tf.float32) \
-             * kernel_normalising_constant \
-             * tf.exp(multivariate_normal.log_prob(tf.cast(gp_X, tf.float32)))
+      # TODO Make this its own function
+      int_k_pi = tf.cast(kernel_variance, tf.float32) \
+                 * kernel_normalising_constant \
+                 * tf.exp(multivariate_normal.log_prob(tf.cast(gp_X, tf.float32)))
 
-  integral_mean = tf.expand_dims(int_k_pi, 0) @ tf.cast(K_inv_Y, tf.float32)
+      integral_mean = tf.expand_dims(int_k_pi, 0) @ tf.cast(K_inv_Y, tf.float32)
 
-  bq_elbo = integral_mean + prior_mean_integral
+      bq_elbo = integral_mean + prior_mean_integral
 
-  proposal_entropy = proposal.entropy()
+      proposal_entropy = proposal.entropy()
 
-  estimators['bq_loss'] = tf.squeeze(- bq_elbo - proposal_entropy, [1])
+      bq_loss = tf.squeeze(- bq_elbo - proposal_entropy, [1])
+      estimators['bq'] = (log_avg_weight, log_avg_weight, bq_loss)
 
 
   # Build the evidence lower bound (ELBO) or the negative loss
