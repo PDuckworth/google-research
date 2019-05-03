@@ -394,13 +394,17 @@ def iwae(p_z,
 
       def get_log_joint(z, observations):
           sess = tf.Session()
+
+
           with sess.as_default():
 
-              float_z = tf.reshape(tf.cast(z, tf.float32), (batch_size, FLAGS.latent_dim))
-              print(float_z)
+              float_z = tf.transpose(tf.cast(z, tf.float32))
+              print("z", float_z)
+
               likelihood = p_x_given_z(float_z)  # condition the likelihood on the z
               prior = ToyPrior(mu_inital_value = 2., size = FLAGS.latent_dim, name="toy_prior")
-              init = tf.initialize_all_variables()
+              # init = tf.initialize_all_variables()
+              init = tf.global_variables_initializer()
               sess.run(init)
 
               prior = prior()
@@ -410,7 +414,7 @@ def iwae(p_z,
               log_prob = likelihood.log_prob(observations)
 
               print("logprob", log_prob)
-              log_prior = tf.reshape(prior.log_prob(z), (batch_size, FLAGS.latent_dim))
+              log_prior = prior.log_prob(float_z)
 
               print("prior", log_prior)
               return log_prob.eval() + log_prior.eval()
@@ -430,13 +434,16 @@ def iwae(p_z,
           # initial_y = np.concatenate(initial_y)
 
           print("obs", observations)
-          print("initial_x", initial_x)
+
           initial_y = get_log_joint(np.atleast_2d(initial_x), observations)
-          print("initial_y", initial_y)
+          print("initial_y", initial_y.shape, initial_y)
 
           mean_function = NegativeQuadratic(1)
 
-          gpy_gp = GPy.core.GP(initial_x, initial_y, kernel=kernel, likelihood=bq_likelihood, mean_function=mean_function)
+          print("initial_x", np.expand_dims(initial_x, 1).shape, np.expand_dims(initial_x, 1))
+
+
+          gpy_gp = GPy.core.GP(np.expand_dims(initial_x, 1), initial_y, kernel=kernel, likelihood=bq_likelihood, mean_function=mean_function)
           warped_gp = VanillaGP(gpy_gp)
           # bq_model = IntegrandModel(warped_gp, bq_prior)
 

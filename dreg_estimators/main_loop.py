@@ -146,7 +146,7 @@ def main(unused_argv):
         prior_scale = tf.ones([FLAGS.latent_dim], dtype=tf.float32)
         prior = lambda _: tfd.Normal(loc=prior_loc, scale=prior_scale)
 
-        proposal = model.ConditionalNormal(
+            proposal = model.ConditionalNormal(
           size=FLAGS.latent_dim,   # 50
           hidden_layer_sizes=proposal_hidden_dims,  # two layers of 200
           mean_center=mean_xs,
