@@ -253,7 +253,7 @@ class ToyConditionalNormal(object):
       mu = tf.stop_gradient(mu)
       # sigma = tf.stop_gradient(sigma)
     # return tfd.Normal(loc=mu, scale=sigma)
-    return tfd.Normal(loc=mu, scale=tf.eye(self.size)*(2/3.))
+    return tfd.Normal(loc=mu, scale=tf.eye(FLAGS.batch_size)*(2/3.))
 
 
 class Toy20DNormal(object):
@@ -425,7 +425,7 @@ def iwae(p_z,
       def get_bq_estimate(loc, scale, observations):
 
           print("proposal / bq prior>>", loc, scale)
-          bq_prior = Gaussian(mean=loc.squeeze(), covariance=scale.item())
+          bq_prior = Gaussian(mean=loc.squeeze(), covariance=scale.squeeze())
           initial_x = bq_prior.sample(1)  # 1 sample from each proposal distribution in the batch
 
           # initial_y = []
@@ -439,11 +439,11 @@ def iwae(p_z,
           print("initial_y", initial_y.shape, initial_y)
 
           mean_function = NegativeQuadratic(1)
+          initial_x = np.expand_dims(initial_x, 1)
 
-          print("initial_x", np.expand_dims(initial_x, 1).shape, np.expand_dims(initial_x, 1))
-
-
-          gpy_gp = GPy.core.GP(np.expand_dims(initial_x, 1), initial_y, kernel=kernel, likelihood=bq_likelihood, mean_function=mean_function)
+          print("x", type(initial_x), initial_x.shape)
+          print("y", type(initial_y), initial_y.shape)
+          gpy_gp = GPy.core.GP(initial_x, initial_y, kernel=kernel, likelihood=bq_likelihood, mean_function=mean_function)
           warped_gp = VanillaGP(gpy_gp)
           # bq_model = IntegrandModel(warped_gp, bq_prior)
 
@@ -478,8 +478,15 @@ def iwae(p_z,
       Lambda = tf.diag(omega ** -2)
       Lambda = tf.cast(Lambda, tf.float32)
 
-      quadratic_form_expectation = tf.trace(Lambda @ proposal._scale * tf.eye(dimensions)) + tf.transpose(
-          mu_diff) @ Lambda @ mu_diff
+      print("mu diff", mu_diff)
+      print("scale", proposal._scale)
+
+
+      quadratic_form_expectation1 = tf.trace(Lambda @ proposal._scale * tf.eye(dimensions))
+
+      quadratic_form_expectation2 = tf.transpose(mu_diff) @ Lambda @ mu_diff
+
+      quadratic_form_expectation = quadratic_form_expectation1 + quadratic_form_expectation2
 
       prior_mean_integral = (tf.cast(m_0, tf.float32) - 0.5 * quadratic_form_expectation)
 
