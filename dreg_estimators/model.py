@@ -425,7 +425,7 @@ def iwae(p_z,
       def get_bq_estimate(loc, scale, observations):
 
           print("proposal / bq prior>>", loc, scale)
-          bq_prior = Gaussian(mean=loc.squeeze(), covariance=scale.squeeze())
+          bq_prior = Gaussian(mean=loc.squeeze(), covariance=scale.squeeze()**2)
           initial_x = bq_prior.sample(1)  # 1 sample from each proposal distribution in the batch
 
           # initial_y = []
@@ -463,7 +463,7 @@ def iwae(p_z,
           #
           #     bq_model.update(batch, Y)
 
-          gpy_gp.optimize()
+          gpy_gp.optimize_restarts(num_restarts=5, verbose=False)
 
           return gpy_gp.mean_function.mu, gpy_gp.mean_function.m_0, gpy_gp.mean_function.omega, gpy_gp.kern.lengthscale.values[0], gpy_gp.kern.variance.values[0], gpy_gp.X, warped_gp.underlying_gp.K_inv_Y
 
@@ -471,46 +471,65 @@ def iwae(p_z,
       mu, m_0, omega, kernel_lengthscale, kernel_variance, gp_X, K_inv_Y = tf.py_func(get_bq_estimate, [proposal._loc, proposal._scale, observations], [tf.float64, tf.float64, tf.float64, tf.float64, tf.float64, tf.float64, tf.float64])
       # mu, m_0, omega, kernel_lengthscale, kernel_variance, gp_X, K_inv_Y = get_bq_estimate(proposal._loc, proposal._scale)
 
-      dimensions = 1
+      latent_dim = 1
 
+      # Need to set shapes explicitly because these variables come out of py_func, and TF can't infer their shapes
+      omega.set_shape((latent_dim))
+      mu.set_shape((latent_dim))
+      m_0.set_shape(())
+
+      dimensions = 1  # which dimensions?? latent dimensions?
+
+      # mu is latent_dim-dimensional, proposal._loc is (latent_dim x batch_size)-dimensional
       mu_diff = proposal._loc - tf.expand_dims(tf.cast(mu, tf.float32), 1)
 
-      Lambda = tf.diag(omega ** -2)
-      Lambda = tf.cast(Lambda, tf.float32)
+      Lambda = tf.diag(omega ** -2)  # omega is latent_dim-dimensional
+      Lambda = tf.cast(Lambda, tf.float32)  # latent_dim x latent_dim
 
-      print("mu diff", mu_diff)
-      print("scale", proposal._scale)
+      print("mu diff", mu_diff)  # batch_size x latent_dim
+      print("scale", proposal._scale)  # (batch_size.latent_dim x batch_size.latent_dim) block-diagonal matrix...
+      # should be batch_size x latent_dim x latent_dim
+      # (batch_size blocks of size latent_dim x latent_dim)
 
+      hacked_proposal_scale = tf.reshape(tf.diag_part(proposal._scale), (-1, 1, 1))  # this does the right thing iff latent_dim is 1...
 
-      quadratic_form_expectation1 = tf.trace(Lambda @ proposal._scale * tf.eye(dimensions))
+      # inner thing wants to be batch_size x latent_dim x latent_dim, result wants to be (batch_size)
+      inner_qfe1 = tf.tensordot(hacked_proposal_scale**2, Lambda, [[2],[0]])
+      quadratic_form_expectation1 = tf.trace(inner_qfe1)  # (batch_size)
 
-      quadratic_form_expectation2 = tf.transpose(mu_diff) @ Lambda @ mu_diff
+      quadratic_form_expectation2_1 = tf.tensordot(mu_diff, Lambda, [[1],[0]])  # (batch_size x latent_dim)
+      quadratic_form_expectation2 = tf.einsum('ij,ij->i', quadratic_form_expectation2_1, mu_diff)  # (batch_size)
 
       quadratic_form_expectation = quadratic_form_expectation1 + quadratic_form_expectation2
 
-      prior_mean_integral = (tf.cast(m_0, tf.float32) - 0.5 * quadratic_form_expectation)
+      prior_mean_integral = (tf.cast(m_0, tf.float32) - 0.5 * quadratic_form_expectation)  # (batch_size)
 
       kernel_normalising_constant = (2 * np.pi * tf.cast(kernel_lengthscale, tf.float32)) ** dimensions / 2
 
-      cov_matrix = tf.cast(kernel_lengthscale, tf.float32) * tf.eye(dimensions) + proposal._scale * tf.eye(dimensions)
+      cov_matrix = tf.expand_dims(tf.cast(kernel_lengthscale, tf.float32) * tf.eye(dimensions), 0) + hacked_proposal_scale**2  # (batch_size x latent_dim x latent_dim)
 
       multivariate_normal = tfp.distributions.MultivariateNormalFullCovariance(loc=proposal._loc,
                                                                                covariance_matrix=cov_matrix)
 
+      # gp_X is num_gp_points x latent_dim
       # TODO Make this its own function
       int_k_pi = tf.cast(kernel_variance, tf.float32) \
                  * kernel_normalising_constant \
-                 * tf.exp(multivariate_normal.log_prob(tf.cast(gp_X, tf.float32)))
+                 * multivariate_normal.prob(tf.cast(gp_X, tf.float32))
+
+      multivariate_normal.prob(tf.cast(gp_X, tf.float32))  # (batch_size) possibly incorrect?
+      #  ... we have batch_size many normals, and batch_size many points in latent_dim space...
+      # for each normal, we want the integral considering all points...
+      # int_k_pi should be batch_size x num_gp_points, and K_inv_Y should be (num_gp_points)
 
       integral_mean = tf.expand_dims(int_k_pi, 0) @ tf.cast(K_inv_Y, tf.float32)
 
-      bq_elbo = integral_mean + prior_mean_integral
 
-      proposal_entropy = proposal.entropy()
+      bq_elbo = integral_mean + prior_mean_integral + proposal.entropy()
+      bq_elbo = tf.reduce_mean(bq_elbo)
 
-      bq_loss = tf.squeeze(- bq_elbo - proposal_entropy, [1])
+      bq_loss = -bq_elbo
       estimators['bq'] = (log_avg_weight, log_avg_weight, bq_loss)
-
 
   # Build the evidence lower bound (ELBO) or the negative loss
   kl = tf.reduce_mean(tfd.kl_divergence(proposal, prior), axis=-1)  # analytic KL
