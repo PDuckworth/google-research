@@ -515,20 +515,19 @@ def iwae(p_z,
       # TODO Make this its own function
       int_k_pi = tf.cast(kernel_variance, tf.float32) \
                  * kernel_normalising_constant \
-                 * multivariate_normal.prob(tf.cast(gp_X, tf.float32))
+                 * multivariate_normal.prob(tf.cast(tf.reshape(gp_X, (-1, 1, 1)), tf.float32))
 
-      multivariate_normal.prob(tf.cast(gp_X, tf.float32))  # (batch_size) possibly incorrect?
+      int_k_pi = tf.transpose(int_k_pi)
       #  ... we have batch_size many normals, and batch_size many points in latent_dim space...
       # for each normal, we want the integral considering all points...
       # int_k_pi should be batch_size x num_gp_points, and K_inv_Y should be (num_gp_points)
 
-      integral_mean = tf.expand_dims(int_k_pi, 0) @ tf.cast(K_inv_Y, tf.float32)
+      integral_mean = tf.transpose(int_k_pi @ tf.cast(K_inv_Y, tf.float32))
 
-
-      bq_elbo = integral_mean + prior_mean_integral + proposal.entropy()
+      bq_elbo = integral_mean + prior_mean_integral + tf.diag_part(proposal.entropy())
       bq_elbo = tf.reduce_mean(bq_elbo)
-
       bq_loss = -bq_elbo
+
       estimators['bq'] = (log_avg_weight, log_avg_weight, bq_loss)
 
   # Build the evidence lower bound (ELBO) or the negative loss
