@@ -380,7 +380,13 @@ def iwae(p_z,
   log_p_x_given_z = tf.reduce_sum(likelihood.log_prob(observations), axis=-1)  # [num_samples, batch_size]
 
   log_weights = log_p_z + log_p_x_given_z - log_q_z    # [num_samples, batch_size]
-  log_sum_weight = tf.reduce_logsumexp(log_weights, axis=0)   # sum over samples before log converts back to IWAE estimator (log of the sum)
+  print_op0 = tf.print("LOG 0", z)
+  print_op1 = tf.print("LOG 1", log_p_z)
+  print_op2 = tf.print("LOG 2", log_p_x_given_z )
+  print_op3 = tf.print("LOG 3", log_q_z)
+
+  with tf.control_dependencies([print_op0, print_op1, print_op2, print_op3]):
+    log_sum_weight = tf.reduce_logsumexp(log_weights, axis=0)   # sum over samples before log converts back to IWAE estimator (log of the sum)
   log_avg_weight = log_sum_weight - tf.log(tf.to_float(num_samples))
   # print("shapes", log_p_z.shape, log_p_x_given_z.shape, log_q_z.shape, log_weights.shape, log_sum_weight.shape)
 
@@ -424,7 +430,7 @@ def iwae(p_z,
 
       def get_bq_estimate(loc, scale, observations):
 
-          print("proposal / bq prior>>", loc, scale)
+          # print("proposal / bq prior>>", loc, scale)
           bq_prior = Gaussian(mean=loc.squeeze(), covariance=scale.squeeze()**2)
           initial_x = bq_prior.sample(1)  # 1 sample from each proposal distribution in the batch
 
@@ -433,16 +439,16 @@ def iwae(p_z,
           #     initial_y.append(get_log_joint(np.atleast_2d(point), observations))
           # initial_y = np.concatenate(initial_y)
 
-          print("obs", observations)
+          # print("obs", observations)
 
           initial_y = get_log_joint(np.atleast_2d(initial_x), observations)
-          print("initial_y", initial_y.shape, initial_y)
+          # print("initial_y", initial_y.shape, initial_y)
 
           mean_function = NegativeQuadratic(1)
           initial_x = np.expand_dims(initial_x, 1)
 
-          print("x", type(initial_x), initial_x.shape)
-          print("y", type(initial_y), initial_y.shape)
+          # print("x", type(initial_x), initial_x.shape)
+          # print("y", type(initial_y), initial_y.shape)
           gpy_gp = GPy.core.GP(initial_x, initial_y, kernel=kernel, likelihood=bq_likelihood, mean_function=mean_function)
           warped_gp = VanillaGP(gpy_gp)
           # bq_model = IntegrandModel(warped_gp, bq_prior)
@@ -531,11 +537,11 @@ def iwae(p_z,
       estimators['bq'] = (log_avg_weight, log_avg_weight, bq_loss)
 
   # Build the evidence lower bound (ELBO) or the negative loss
-  kl = tf.reduce_mean(tfd.kl_divergence(proposal, prior), axis=-1)  # analytic KL
-  log_sum_ll = tf.reduce_logsumexp(log_p_x_given_z, axis=0)  # this converts back to IWAE estimator (log of the sum)
-  expected_log_likelihood = log_sum_ll - tf.log(tf.to_float(num_samples))
-  elbo = tf.reduce_mean(expected_log_likelihood - kl)
-  estimators["elbo"] = elbo
+  # kl = tf.reduce_mean(tfd.kl_divergence(proposal, prior), axis=-1)  # analytic KL
+  # log_sum_ll = tf.reduce_logsumexp(log_p_x_given_z, axis=0)  # this converts back to IWAE estimator (log of the sum)
+  # expected_log_likelihood = log_sum_ll - tf.log(tf.to_float(num_samples))
+  # elbo = tf.reduce_mean(expected_log_likelihood - kl)
+  # estimators["elbo"] = elbo
 
   # things we are interested in: (log_p_hat, neg_model_loss, neg_inference_loss)
   estimators["iwae"] = (log_avg_weight, log_avg_weight, log_avg_weight)

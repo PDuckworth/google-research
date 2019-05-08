@@ -150,7 +150,7 @@ def load_toy_data(datapoints = 200, dim=1):
 
   # Add a new axis so that tf can evaluate the log probability at each data point for many parameter values.
   train_xs = data[:100]
-  test_xs = data[:512]
+  test_xs = data[:100]
   valid_xs = data[:512]
 
   return train_xs, valid_xs, test_xs

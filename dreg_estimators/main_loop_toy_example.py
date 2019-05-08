@@ -51,7 +51,7 @@ flags.DEFINE_integer("num_samples", 64, "The numer of K samples to use.")
 flags.DEFINE_integer("latent_dim", 1, "The dimension of the VAE latent space.")
 flags.DEFINE_float("learning_rate", 3e-4, "The learning rate for ADAM.")
 flags.DEFINE_integer("max_steps", int(1e5), "The number of steps to train for.")
-flags.DEFINE_integer("summarize_every", 100,
+flags.DEFINE_integer("summarize_every", 10,
                      "Number of steps between summaries.")
 flags.DEFINE_string("logdir", "/home/paul/Software/DREG-data/Toy/",
                     "The directory to put summaries and checkpoints.")
@@ -128,7 +128,7 @@ def main(unused_argv):
 
     print("VARS: ", proposal.fcnet.get_variables())
     log_p_hat, neg_model_loss, neg_inference_loss = estimators[FLAGS.estimator]
-    elbo = estimators["elbo"]
+    # elbo = estimators["elbo"]
     # bq = estimators["bq"]
 
     model_loss = -tf.reduce_mean(neg_model_loss)
@@ -137,6 +137,7 @@ def main(unused_argv):
 
     if FLAGS.estimator == "bq":
         _, _, inference_loss = estimators['bq']
+
 
     # this is over K samples
     print("INFERENCE LOSS SHAPE = ", neg_inference_loss.shape)
@@ -188,6 +189,9 @@ def main(unused_argv):
     # tf.summary.scalar("inference_grad_snr_sq/%s" % FLAGS.estimator, inference_grad_snr_sq)
 
     tf.summary.scalar("log_p_hat/train", log_p_hat_mean)
+
+    tf.summary.scalar("ELBOs/bq_train", inference_loss)
+    tf.summary.scalar("ELBOs/iwae", -tf.reduce_mean(estimators["iwae"][0]))
 
     exp_name = "%s.lr-%g.n_samples-%d.batch_size-%d.alpha-%g.dataset-%s.run-%d" % (
         FLAGS.estimator, FLAGS.learning_rate, FLAGS.num_samples, FLAGS.batch_size, FLAGS.alpha,
@@ -270,7 +274,7 @@ def main(unused_argv):
 
         if n_epoch % 10 == 0:
           print("epoch #", n_epoch)
-          run_eval(cur_step, "test") # , FLAGS.batch_size)
+          run_eval(cur_step, "test", FLAGS.batch_size)
           # run_eval(cur_step, "valid", FLAGS.batch_size)
 
           var_names = ["theta", "A    ", "b    "]
