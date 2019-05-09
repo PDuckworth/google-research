@@ -375,15 +375,15 @@ def iwae(p_z,
 
   # Before reduce_sum is [num_samples, batch_size, latent_dim].
   # Sum over the latent dim.
-  log_q_z = tf.reduce_sum(proposal.log_prob(z), axis=-1)  # [num_samples, batch_size]
+  log_q_z = tf.reduce_sum(tf.diag_part(tf.squeeze(proposal.log_prob(z))), axis=-1)  # [num_samples, batch_size]
   # Before reduce_sum is [num_samples, batch_size, latent_dim].
   log_p_x_given_z = tf.reduce_sum(likelihood.log_prob(observations), axis=-1)  # [num_samples, batch_size]
 
   log_weights = log_p_z + log_p_x_given_z - log_q_z    # [num_samples, batch_size]
-  print_op0 = tf.print("LOG 0", z)
-  print_op1 = tf.print("LOG 1", log_p_z)
-  print_op2 = tf.print("LOG 2", log_p_x_given_z )
-  print_op3 = tf.print("LOG 3", log_q_z)
+  print_op0 = tf.print("LOG WEIGHTS>>>", log_weights)
+  print_op1 = tf.print("LOG P(Z)>>>", log_p_z)
+  print_op2 = tf.print("LOG P(X|Z)>>>", log_p_x_given_z)
+  print_op3 = tf.print("LOG Q(Z)>>>", log_q_z)
 
   with tf.control_dependencies([print_op0, print_op1, print_op2, print_op3]):
     log_sum_weight = tf.reduce_logsumexp(log_weights, axis=0)   # sum over samples before log converts back to IWAE estimator (log of the sum)
