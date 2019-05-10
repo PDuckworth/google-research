@@ -30,6 +30,7 @@ from bayesquad.gps import VanillaGP
 from bayesquad.priors import Gaussian
 from bayesquad.quadrature import IntegrandModel
 
+
 tfd = tfp.distributions
 FLAGS = tf.flags.FLAGS
 
@@ -179,7 +180,7 @@ class ToyConditionalNormalLikelihood(object):
 
   def __call__(self, *args, **kwargs):
     """Creates a normal distribution (conditioned?) on the inputs."""
-    return tfd.Normal(loc=args[0], scale=tf.eye(self.size))
+    return tfd.Normal(loc=args[0], scale=tf.ones(self.size))
 
 
 class ToyPrior(object):
@@ -212,6 +213,7 @@ class ToyConditionalNormal(object):
                name="toy_normal"):
 
     self.size = size
+    self.hidden_layer_sizes = hidden_layer_sizes
     self.name = name
     if initializers is None:
       initializers = DEFAULT_INITIALIZERS
@@ -232,13 +234,13 @@ class ToyConditionalNormal(object):
     fcnet_inputs = tf.reshape(concatted_inputs, fcnet_input_shape)
 
     # print("fcnet_inputs shape:", fcnet_inputs.shape, type(fcnet_inputs))
-    outs = self.fcnet(fcnet_inputs)
+    out = self.fcnet(fcnet_inputs)
 
     # Reshape outputs to the original shape.
-    output_size = tf.concat([raw_input_shape, [1]], axis=0)
-    out = tf.reshape(outs, output_size)
+    print(">>>why is this wrong?", raw_input_shape)
 
-    # print("out.", out)
+    output_size = tf.concat([raw_input_shape, [1]], axis=0)
+    # out = tf.reshape(out, output_size)
     return out
     # mu, sigma = tf.split(outs, 2, axis=1)
     # return mu, sigma
@@ -253,7 +255,13 @@ class ToyConditionalNormal(object):
       mu = tf.stop_gradient(mu)
       # sigma = tf.stop_gradient(sigma)
     # return tfd.Normal(loc=mu, scale=sigma)
-    return tfd.Normal(loc=mu, scale=tf.eye(FLAGS.batch_size)*(2/3.))
+    print("<<< MU SHAPE<", mu.shape)
+
+    # a = np.ones([self.hidden_layer_sizes, self.hidden_layer_sizes], dtype=np.float32) * 2 / 3
+    # block_scale = np.kron(np.eye(FLAGS.batch_size, dtype=np.float32), a)
+
+    scale = np.eye(FLAGS.batch_size, dtype=np.float32)*2/3
+    return tfd.Normal(loc=mu, scale=scale)
 
 
 class Toy20DNormal(object):
@@ -308,7 +316,7 @@ class Toy20DNormal(object):
 def get_toy_models(train_xs, which_example="toy1D"):
 
   if FLAGS.dataset == "toy":
-    latent_dim = 1
+    # latent_dim = 1
 
     # prior_loc = tf.zeros(latent_dim, dtype=tf.float32)
     # prior_scale = tf.ones(latent_dim, dtype=tf.float32)
@@ -320,22 +328,23 @@ def get_toy_models(train_xs, which_example="toy1D"):
 
     # with tf.name_scope('proposal') as scope:
     proposal = ToyConditionalNormal(
-      size=latent_dim,
-      hidden_layer_sizes=1,
+      size=FLAGS.latent_dim,
+      hidden_layer_sizes= FLAGS.latent_dim,
       use_bias=True,
       name="proposal")
 
   return z_prior, likelihood, proposal
 
 
-def iwae(p_z,
-         p_x_given_z,
-         q_z,
+def iwae(p_z,           # prior
+         p_x_given_z,   # likelihood
+         q_z,           # proposal
          observations,
          num_samples,
          cvs = [],
          contexts=None,
-         antithetic=False):
+         antithetic=False,
+         debug = False):
   """Computes a gradient of the IWAE estimator.
 
   Args:
@@ -375,18 +384,26 @@ def iwae(p_z,
 
   # Before reduce_sum is [num_samples, batch_size, latent_dim].
   # Sum over the latent dim.
-  log_q_z = tf.reduce_sum(tf.diag_part(tf.squeeze(proposal.log_prob(z))), axis=-1)  # [num_samples, batch_size]
+
+  # log_q_z = tf.reduce_sum(tf.diag_part(tf.squeeze(proposal.log_prob(z))), axis=-1)  # [num_samples, batch_size]
+  log_q_z = tf.reduce_sum(proposal.log_prob(z), axis=-1)  # [num_samples, batch_size]
+
   # Before reduce_sum is [num_samples, batch_size, latent_dim].
   log_p_x_given_z = tf.reduce_sum(likelihood.log_prob(observations), axis=-1)  # [num_samples, batch_size]
 
   log_weights = log_p_z + log_p_x_given_z - log_q_z    # [num_samples, batch_size]
-  print_op0 = tf.print("LOG WEIGHTS>>>", log_weights)
-  print_op1 = tf.print("LOG P(Z)>>>", log_p_z)
-  print_op2 = tf.print("LOG P(X|Z)>>>", log_p_x_given_z)
-  print_op3 = tf.print("LOG Q(Z)>>>", log_q_z)
+  if debug:
+      print_op = tf.print("Z>>>", z.shape, z)
+      print_op0 = tf.print("LOG WEIGHTS>>>", log_weights.shape, log_weights)
+      print_op1 = tf.print("LOG P(Z)>>>", log_p_z.shape, log_p_z)
+      print_op2 = tf.print("LOG P(X|Z)>>>", log_p_x_given_z.shape, log_p_x_given_z)
+      print_op3 = tf.print("LOG Q(Z)>>>", log_q_z.shape, log_q_z)
 
-  with tf.control_dependencies([print_op0, print_op1, print_op2, print_op3]):
-    log_sum_weight = tf.reduce_logsumexp(log_weights, axis=0)   # sum over samples before log converts back to IWAE estimator (log of the sum)
+      with tf.control_dependencies([print_op, print_op0, print_op1, print_op2, print_op3]):
+        log_sum_weight = tf.reduce_logsumexp(log_weights, axis=0)   # sum over samples before log converts back to IWAE estimator (log of the sum)
+  else:
+    log_sum_weight = tf.reduce_logsumexp(log_weights, axis=0)  # sum over samples before log converts back to IWAE estimator (log of the sum)
+
   log_avg_weight = log_sum_weight - tf.log(tf.to_float(num_samples))
   # print("shapes", log_p_z.shape, log_p_x_given_z.shape, log_q_z.shape, log_weights.shape, log_sum_weight.shape)
 
@@ -401,11 +418,10 @@ def iwae(p_z,
       def get_log_joint(z, observations):
           sess = tf.Session()
 
-
           with sess.as_default():
 
               float_z = tf.transpose(tf.cast(z, tf.float32))
-              print("z", float_z)
+              if debug: print("z", float_z)
 
               likelihood = p_x_given_z(float_z)  # condition the likelihood on the z
               prior = ToyPrior(mu_inital_value = 2., size = FLAGS.latent_dim, name="toy_prior")
@@ -415,14 +431,14 @@ def iwae(p_z,
 
               prior = prior()
               # log_prob = likelihood.log_prob(observations.reshape(1,2)).eval()
-              print("like", likelihood._loc, likelihood._scale)
+              if debug: print("like", likelihood._loc, likelihood._scale)
 
               log_prob = likelihood.log_prob(observations)
 
-              print("logprob", log_prob)
+              if debug: print("logprob", log_prob)
               log_prior = prior.log_prob(float_z)
 
-              print("prior", log_prior)
+              if debug: print("prior", log_prior)
               return log_prob.eval() + log_prior.eval()
 
       kernel = GPy.kern.RBF(1, variance=2, lengthscale=2)
@@ -545,9 +561,9 @@ def iwae(p_z,
 
   # things we are interested in: (log_p_hat, neg_model_loss, neg_inference_loss)
   estimators["iwae"] = (log_avg_weight, log_avg_weight, log_avg_weight)
-
-  stopped_z_log_q_z = tf.reduce_sum(
-      proposal.log_prob(tf.stop_gradient(z)), axis=-1)
+  print_op4 = tf.print("IWAE>>>", log_avg_weight)
+  with tf.control_dependencies([print_op4]):
+      stopped_z_log_q_z = tf.reduce_sum(proposal.log_prob(tf.stop_gradient(z)), axis=-1)
   estimators["rws"] = (log_avg_weight, model_loss,
                        tf.reduce_sum(
                            normalized_weights * stopped_z_log_q_z, axis=0))

@@ -146,11 +146,11 @@ def load_toy_data(datapoints = 200, dim=1):
 
   # Create fake data points using a np distribution
   np.random.seed(SEED)
-  data = np.random.normal(loc=TRUE_MEAN, scale=TRUE_SCALE, size=(NUM_DATA_POINTS, 1)).astype(np.float32)
+  data = np.random.normal(loc=TRUE_MEAN, scale=TRUE_SCALE, size=(NUM_DATA_POINTS, 4)).astype(np.float32)
 
   # Add a new axis so that tf can evaluate the log probability at each data point for many parameter values.
-  train_xs = data[:100]
-  test_xs = data[:100]
+  train_xs = data[:1000]
+  test_xs = data[:1000]
   valid_xs = data[:512]
 
   return train_xs, valid_xs, test_xs

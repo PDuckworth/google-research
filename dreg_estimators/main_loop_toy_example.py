@@ -110,7 +110,7 @@ def main(unused_argv):
 
     # Placeholder for input mnist digits.
     # observations_ph = tf.placeholder("float32", [None, 2])
-    observations_ph = tf.placeholder("float32", [None, 1])
+    observations_ph = tf.placeholder("float32", [None, 4])
 
     # set up your prior dist, proposal and likelihood networks
     (prior, likelihood, proposal) = model.get_toy_models(train_xs, which_example="toy1D")
@@ -122,7 +122,8 @@ def main(unused_argv):
         proposal,
         observations_ph,
         FLAGS.num_samples, [], # [alpha, beta, gamma, delta],
-        contexts=None)
+        contexts=None,
+        debug=True)
 
     # actual_proposal = proposal(observations_ph)
 
@@ -137,7 +138,6 @@ def main(unused_argv):
 
     if FLAGS.estimator == "bq":
         _, _, inference_loss = estimators['bq']
-
 
     # this is over K samples
     print("INFERENCE LOSS SHAPE = ", neg_inference_loss.shape)
@@ -268,8 +268,7 @@ def main(unused_argv):
           # batch_xs = utils.binarize_batch_xs(train_xs[ns])
           batch_xs = train_xs[ns]
 
-          _, cur_step, grads_ = \
-              sess.run([train_op, global_step, grads], feed_dict={observations_ph: batch_xs})
+          _, cur_step, grads_ = sess.run([train_op, global_step, grads], feed_dict={observations_ph: batch_xs})
           # grads_ = sess.run([train_op, global_step, model_params, grads], feed_dict={observations_ph: batch_xs})
 
         if n_epoch % 10 == 0:
