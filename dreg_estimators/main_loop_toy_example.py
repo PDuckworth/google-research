@@ -109,8 +109,8 @@ def main(unused_argv):
     print("dataset = ", train_xs.shape)
 
     # Placeholder for input mnist digits.
-    # observations_ph = tf.placeholder("float32", [None, 2])
-    observations_ph = tf.placeholder("float32", [None, 4])
+    observations_ph = tf.placeholder("float32", [None, 2])
+    # observations_ph = tf.placeholder("float32", [None, 4])
 
     # set up your prior dist, proposal and likelihood networks
     (prior, likelihood, proposal) = model.get_toy_models(train_xs, which_example="toy1D")
@@ -123,7 +123,7 @@ def main(unused_argv):
         observations_ph,
         FLAGS.num_samples, [], # [alpha, beta, gamma, delta],
         contexts=None,
-        debug=True)
+        debug=False)
 
     # actual_proposal = proposal(observations_ph)
 
@@ -152,7 +152,7 @@ def main(unused_argv):
 
     cv_grads = []
 
-    model_grads = opt.compute_gradients(model_loss, var_list=model_params)
+    model_grads = opt.compute_gradients(model_loss, var_list=(model_params))
     # inference model (encoder) params are just A and b. (Ax+b)
     inference_grads = opt.compute_gradients(inference_loss, var_list=inference_params)
 
@@ -168,29 +168,21 @@ def main(unused_argv):
     with tf.control_dependencies(ema_ops):
         train_op = opt.apply_gradients(grads, global_step=global_step)
 
-    # l2_norm = lambda t: tf.sqrt(tf.reduce_sum(tf.pow(t, 2)))
-    # for gradient, variable in inference_grads:
-    #     tf.summary.scalar("phi_grads/" + variable.name, l2_norm(gradient))
-    #     tf.summary.scalar("phi_vars/" + variable.name, l2_norm(variable))
-    #     tf.summary.histogram("phi_grads/" + variable.name, gradient)
-    #     tf.summary.histogram("phi_vars/" + variable.name, variable)
-
-    tf.summary.scalar("params/b", tf.reshape(inference_params[1], ()))
-    tf.summary.scalar("params/A", tf.reshape(inference_params[0], ()))
-    tf.summary.scalar("params/mu", model_params)
-
-    tf.summary.scalar("gradients/A", tf.reshape(inference_grads[0][0], ()))
-    tf.summary.scalar("gradients/b", tf.reshape(inference_grads[1][0], ()))
-    tf.summary.scalar("gradients/mu", model_grads[0][0])
-
-    tf.summary.scalar("grad_variance/phi", inference_grad_variance)
-    tf.summary.scalar("grad_variance/model", model_grad_variance)
-
-    # tf.summary.scalar("inference_grad_snr_sq/%s" % FLAGS.estimator, inference_grad_snr_sq)
+    # tf.summary.scalar("params/b", tf.reshape(inference_params[1], ()))
+    # tf.summary.scalar("params/A", tf.reshape(inference_params[0], ()))
+    # tf.summary.scalar("params/mu", model_params)
+    #
+    # tf.summary.scalar("gradients/A", tf.reshape(inference_grads[0][0], ()))
+    # tf.summary.scalar("gradients/b", tf.reshape(inference_grads[1][0], ()))
+    # tf.summary.scalar("gradients/mu", model_grads[0][0])
+    #
+    # tf.summary.scalar("grad_variance/phi", inference_grad_variance)
+    # tf.summary.scalar("grad_variance/model", model_grad_variance)
 
     tf.summary.scalar("log_p_hat/train", log_p_hat_mean)
 
     tf.summary.scalar("ELBOs/bq_train", inference_loss)
+    tf.summary.scalar("ELBOs/ana_KL", - estimators["elbo"])
     tf.summary.scalar("ELBOs/iwae", -tf.reduce_mean(estimators["iwae"][0]))
 
     exp_name = "%s.lr-%g.n_samples-%d.batch_size-%d.alpha-%g.dataset-%s.run-%d" % (

@@ -175,6 +175,7 @@ class ConditionalNormal(object):
 
 class ToyConditionalNormalLikelihood(object):
   def __init__(self, size =1, name="toy_likelihood"):
+    """Here, the input data dimenion, must be the same as the requested latent_dimension, since there is no function, """
     self.size = size
     self.name = name
 
@@ -184,19 +185,22 @@ class ToyConditionalNormalLikelihood(object):
 
 
 class ToyPrior(object):
-  def __init__(self, mu_inital_value = 2, size = 1, name="toy_prior"):
+  def __init__(self, mu_inital_value = 2., size = 1, name="toy_prior"):
     self.size = size
     self.name = name
-    self.mu_inital_value = mu_inital_value
-    self.mu = tf.Variable(name="mu", initial_value=self.mu_inital_value)
+
+    self.prior_loc = tf.Variable(name="mu", initial_value=  tf.ones([FLAGS.latent_dim], dtype=tf.float32)*mu_inital_value)
+    self.prior_scale = tf.ones([FLAGS.latent_dim], dtype=tf.float32)
+
+    # self.mu = tf.Variable(name="mu", initial_value= self.mu_inital_value)
     # print(self.mu)
 
   def get_parameter_mu(self):
-    return self.mu
+    return self.prior_loc
 
   def __call__(self, *args, **kwargs):
     """Creates a normal distribution"""
-    return tfd.Normal(loc=self.mu, scale=tf.eye(self.size))
+    return tfd.Normal(loc=self.prior_loc, scale=self.prior_scale)
 
 DEFAULT_INITIALIZERS = {
     "w": tf.contrib.layers.xavier_initializer(),
@@ -260,7 +264,7 @@ class ToyConditionalNormal(object):
     # a = np.ones([self.hidden_layer_sizes, self.hidden_layer_sizes], dtype=np.float32) * 2 / 3
     # block_scale = np.kron(np.eye(FLAGS.batch_size, dtype=np.float32), a)
 
-    scale = np.eye(FLAGS.batch_size, dtype=np.float32)*2/3
+    scale = tf.ones_like(mu) * 2/3. #(FLAGS.batch_size, dtype=np.float32)*2/3
     return tfd.Normal(loc=mu, scale=scale)
 
 
@@ -314,17 +318,13 @@ class Toy20DNormal(object):
 
 
 def get_toy_models(train_xs, which_example="toy1D"):
+  input_dim = train_xs.shape[1]
 
   if FLAGS.dataset == "toy":
-    # latent_dim = 1
-
-    # prior_loc = tf.zeros(latent_dim, dtype=tf.float32)
-    # prior_scale = tf.ones(latent_dim, dtype=tf.float32)
-    # # with tf.name_scope('prior') as scope:
 
     z_prior = ToyPrior(mu_inital_value = 2., size = FLAGS.latent_dim, name="toy_prior")
 
-    likelihood = ToyConditionalNormalLikelihood()
+    likelihood = ToyConditionalNormalLikelihood(size = input_dim)
 
     # with tf.name_scope('proposal') as scope:
     proposal = ToyConditionalNormal(
@@ -389,7 +389,8 @@ def iwae(p_z,           # prior
   log_q_z = tf.reduce_sum(proposal.log_prob(z), axis=-1)  # [num_samples, batch_size]
 
   # Before reduce_sum is [num_samples, batch_size, latent_dim].
-  log_p_x_given_z = tf.reduce_sum(likelihood.log_prob(observations), axis=-1)  # [num_samples, batch_size]
+  log_prob_of_obs = likelihood.log_prob(observations) # [num_samples, batch_size, input_dim]
+  log_p_x_given_z = tf.reduce_sum(log_prob_of_obs, axis=-1)  # [num_samples, batch_size]
 
   log_weights = log_p_z + log_p_x_given_z - log_q_z    # [num_samples, batch_size]
   if debug:
@@ -553,11 +554,11 @@ def iwae(p_z,           # prior
       estimators['bq'] = (log_avg_weight, log_avg_weight, bq_loss)
 
   # Build the evidence lower bound (ELBO) or the negative loss
-  # kl = tf.reduce_mean(tfd.kl_divergence(proposal, prior), axis=-1)  # analytic KL
-  # log_sum_ll = tf.reduce_logsumexp(log_p_x_given_z, axis=0)  # this converts back to IWAE estimator (log of the sum)
-  # expected_log_likelihood = log_sum_ll - tf.log(tf.to_float(num_samples))
-  # elbo = tf.reduce_mean(expected_log_likelihood - kl)
-  # estimators["elbo"] = elbo
+  kl = tf.reduce_mean(tfd.kl_divergence(proposal, prior), axis=-1)  # analytic KL
+  log_sum_ll = tf.reduce_logsumexp(log_p_x_given_z, axis=0)  # this converts back to IWAE estimator (log of the sum)
+  expected_log_likelihood = log_sum_ll - tf.log(tf.to_float(num_samples))
+  elbo = tf.reduce_mean(expected_log_likelihood - kl)
+  estimators["elbo"] = elbo
 
   # things we are interested in: (log_p_hat, neg_model_loss, neg_inference_loss)
   estimators["iwae"] = (log_avg_weight, log_avg_weight, log_avg_weight)
