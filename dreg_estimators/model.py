@@ -373,6 +373,7 @@ def iwae(p_z,           # prior
   """
   # alpha, beta, gamma, delta = cvs
   batch_size = tf.shape(observations)[0]
+  latent_dim = tf.shape(observations)[1]
   proposal = q_z(observations, contexts, stop_gradient=False)
 
   # [num_samples, batch_size, latent_size]
@@ -494,7 +495,7 @@ def iwae(p_z,           # prior
       mu, m_0, omega, kernel_lengthscale, kernel_variance, gp_X, K_inv_Y = tf.py_func(get_bq_estimate, [proposal._loc, proposal._scale, observations], [tf.float64, tf.float64, tf.float64, tf.float64, tf.float64, tf.float64, tf.float64])
       # mu, m_0, omega, kernel_lengthscale, kernel_variance, gp_X, K_inv_Y = get_bq_estimate(proposal._loc, proposal._scale)
 
-      latent_dim = 1
+      # latent_dim = 1
 
       # Need to set shapes explicitly because these variables come out of py_func, and TF can't infer their shapes
       omega.set_shape((latent_dim))
