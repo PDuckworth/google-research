@@ -442,7 +442,7 @@ def iwae(p_z,           # prior
               if debug: print("prior", log_prior)
               return log_prob.eval() + log_prior.eval()
 
-      kernel = GPy.kern.RBF(1, variance=2, lengthscale=2)
+      kernel = GPy.kern.RBF(FLAGS.latent_dim, variance=2, lengthscale=2)
       bq_likelihood = GPy.likelihoods.Gaussian(variance=1e-5)
 
       def get_bq_estimate(loc, scale, observations):
@@ -461,7 +461,7 @@ def iwae(p_z,           # prior
           initial_y = get_log_joint(np.atleast_2d(initial_x), observations)
           # print("initial_y", initial_y.shape, initial_y)
 
-          mean_function = NegativeQuadratic(1)
+          mean_function = NegativeQuadratic(FLAGS.latent_dim)
           initial_x = np.expand_dims(initial_x, 1)
 
           # print("x", type(initial_x), initial_x.shape)
@@ -494,14 +494,14 @@ def iwae(p_z,           # prior
       mu, m_0, omega, kernel_lengthscale, kernel_variance, gp_X, K_inv_Y = tf.py_func(get_bq_estimate, [proposal._loc, proposal._scale, observations], [tf.float64, tf.float64, tf.float64, tf.float64, tf.float64, tf.float64, tf.float64])
       # mu, m_0, omega, kernel_lengthscale, kernel_variance, gp_X, K_inv_Y = get_bq_estimate(proposal._loc, proposal._scale)
 
-      latent_dim = 1
+      # latent_dim = 1
 
       # Need to set shapes explicitly because these variables come out of py_func, and TF can't infer their shapes
-      omega.set_shape((latent_dim))
-      mu.set_shape((latent_dim))
+      omega.set_shape((FLAGS.latent_dim))
+      mu.set_shape((FLAGS.latent_dim))
       m_0.set_shape(())
 
-      dimensions = 1  # which dimensions?? latent dimensions?
+      dimensions = FLAGS.latent_dim  # which dimensions?? latent dimensions?
 
       # mu is latent_dim-dimensional, proposal._loc is (latent_dim x batch_size)-dimensional
       mu_diff = proposal._loc - tf.expand_dims(tf.cast(mu, tf.float32), 1)
@@ -514,11 +514,14 @@ def iwae(p_z,           # prior
       # should be batch_size x latent_dim x latent_dim
       # (batch_size blocks of size latent_dim x latent_dim)
 
-      hacked_proposal_scale = tf.reshape(tf.diag_part(proposal._scale), (-1, 1, 1))  # this does the right thing iff latent_dim is 1...
 
-      # inner thing wants to be batch_size x latent_dim x latent_dim, result wants to be (batch_size)
-      inner_qfe1 = tf.tensordot(hacked_proposal_scale**2, Lambda, [[2],[0]])
-      quadratic_form_expectation1 = tf.trace(inner_qfe1)  # (batch_size)
+      # hacked_proposal_scale = tf.reshape(tf.diag_part(proposal._scale), (-1, 1, 1))  # this does the right thing iff latent_dim is 1...
+      # hacked_proposal_scale = tf.reshape(proposal._scale, (batch_size, FLAGS.latent_dim))  # this is [batch_size, latent_dim]
+      # inner thing wants to be batch_size x latent_dim x latent_dim, result wants to be (batch_size,)
+      # inner_qfe1 = tf.tensordot(hacked_proposal_scale**2, Lambda, [[2],[0]])
+
+      quadratic_form_expectation1 = tf.reshape(tf.matmul(tf.reshape(tf.cast(omega, tf.float32), (1, FLAGS.latent_dim)), tf.transpose(proposal._scale)), (batch_size,) )
+      # quadratic_form_expectation1 = tf.trace(inner_qfe1)  # shape: [batch_size,]
 
       quadratic_form_expectation2_1 = tf.tensordot(mu_diff, Lambda, [[1],[0]])  # (batch_size x latent_dim)
       quadratic_form_expectation2 = tf.einsum('ij,ij->i', quadratic_form_expectation2_1, mu_diff)  # (batch_size)
