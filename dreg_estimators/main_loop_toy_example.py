@@ -123,29 +123,24 @@ def main(unused_argv):
         observations_ph,
         FLAGS.num_samples, [], # [alpha, beta, gamma, delta],
         contexts=None,
-        debug=False)
+        debug=True)
 
     # actual_proposal = proposal(observations_ph)
 
     print("VARS: ", proposal.fcnet.get_variables())
     log_p_hat, neg_model_loss, neg_inference_loss = estimators[FLAGS.estimator]
-    # elbo = estimators["elbo"]
-    # bq = estimators["bq"]
 
     model_loss = -tf.reduce_mean(neg_model_loss)
-    inference_loss = -tf.reduce_mean(neg_inference_loss)
     log_p_hat_mean = tf.reduce_mean(log_p_hat)
 
     if FLAGS.estimator == "bq":
         _, _, inference_loss = estimators['bq']
         tf.summary.scalar("ELBOs/bq_train", inference_loss)
         tf.summary.scalar("ELBOs/iwae", tf.reduce_mean(estimators["iwae"][0]))
-
-    # this is over K samples
-    print("INFERENCE LOSS SHAPE = ", neg_inference_loss.shape)
+    else:
+        inference_loss = -tf.reduce_mean(neg_inference_loss)
 
     model_params = prior.get_parameter_mu()
-    print(model_params)
     inference_params = proposal.fcnet.get_variables()
 
     # Compute and apply the gradients, summarizing the gradient variance.
@@ -173,7 +168,7 @@ def main(unused_argv):
     tf.summary.scalar("params/b", tf.reshape(inference_params[1][0], ()))
     tf.summary.scalar("params/A", tf.reshape(inference_params[0][0][0], ()))
     tf.summary.scalar("params/mu", model_params[0])
-
+    #
     # tf.summary.scalar("gradients/A", tf.reshape(inference_grads[0][0], ()))
     # tf.summary.scalar("gradients/b", tf.reshape(inference_grads[1][0], ()))
     # tf.summary.scalar("gradients/mu", model_grads[0][0])

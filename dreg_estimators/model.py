@@ -393,17 +393,16 @@ def iwae(p_z,           # prior
   log_p_x_given_z = tf.reduce_sum(log_prob_of_obs, axis=-1)  # [num_samples, batch_size]
 
   log_weights = log_p_z + log_p_x_given_z - log_q_z    # [num_samples, batch_size]
-  if debug:
-      print_op = tf.print("Z>>>", z.shape, z)
-      print_op0 = tf.print("LOG WEIGHTS>>>", log_weights.shape, log_weights)
-      print_op1 = tf.print("LOG P(Z)>>>", log_p_z.shape, log_p_z)
-      print_op2 = tf.print("LOG P(X|Z)>>>", log_p_x_given_z.shape, log_p_x_given_z)
-      print_op3 = tf.print("LOG Q(Z)>>>", log_q_z.shape, log_q_z)
-
-      with tf.control_dependencies([print_op, print_op0, print_op1, print_op2, print_op3]):
-        log_sum_weight = tf.reduce_logsumexp(log_weights, axis=0)   # sum over samples before log converts back to IWAE estimator (log of the sum)
-  else:
-    log_sum_weight = tf.reduce_logsumexp(log_weights, axis=0)  # sum over samples before log converts back to IWAE estimator (log of the sum)
+  # if debug:
+      # print_op = tf.print("Z>>>", z.shape, z)
+      # print_op0 = tf.print("LOG WEIGHTS>>>", log_weights.shape, log_weights)
+      # print_op1 = tf.print("LOG P(Z)>>>", log_p_z.shape, log_p_z)
+      # print_op2 = tf.print("LOG P(X|Z)>>>", log_p_x_given_z.shape, log_p_x_given_z)
+      # print_op3 = tf.print("LOG Q(Z)>>>", log_q_z.shape, log_q_z)
+  #     with tf.control_dependencies([print_op, print_op0, print_op1, print_op2, print_op3]):
+  #       log_sum_weight = tf.reduce_logsumexp(log_weights, axis=0)   # sum over samples before log converts back to IWAE estimator (log of the sum)
+  # else:
+  log_sum_weight = tf.reduce_logsumexp(log_weights, axis=0)  # sum over samples before log converts back to IWAE estimator (log of the sum)
 
   log_avg_weight = log_sum_weight - tf.log(tf.to_float(num_samples))
   # print("shapes", log_p_z.shape, log_p_x_given_z.shape, log_q_z.shape, log_weights.shape, log_sum_weight.shape)
@@ -416,28 +415,28 @@ def iwae(p_z,           # prior
 
   if FLAGS.estimator == "bq":
 
-      def get_log_joint(z, observations):
+      def get_log_joint(initial_x, observations):
           sess = tf.Session()
 
           with sess.as_default():
+              if debug: print("x1", initial_x, initial_x.shape)
 
-              float_z = tf.transpose(tf.cast(z, tf.float32))
-              if debug: print("z", float_z)
-
-              likelihood = p_x_given_z(float_z)  # condition the likelihood on the z
+              likelihood = p_x_given_z(initial_x)  # condition the likelihood on the initial x's
               prior = ToyPrior(mu_inital_value = 2., size = FLAGS.latent_dim, name="toy_prior")
-              # init = tf.initialize_all_variables()
+
               init = tf.global_variables_initializer()
               sess.run(init)
 
               prior = prior()
-              # log_prob = likelihood.log_prob(observations.reshape(1,2)).eval()
-              if debug: print("like", likelihood._loc, likelihood._scale)
 
+              if debug: print("like", likelihood, likelihood._loc, likelihood._scale)
+
+              transpose_obs = tf.transpose(observations)
+              print("transpose_obs ", transpose_obs.shape)
               log_prob = likelihood.log_prob(observations)
 
               if debug: print("logprob", log_prob)
-              log_prior = prior.log_prob(float_z)
+              log_prior = prior.log_prob(initial_x)
 
               if debug: print("prior", log_prior)
               return log_prob.eval() + log_prior.eval()
@@ -445,114 +444,90 @@ def iwae(p_z,           # prior
       kernel = GPy.kern.RBF(FLAGS.latent_dim, variance=2, lengthscale=2)
       bq_likelihood = GPy.likelihoods.Gaussian(variance=1e-5)
 
-      def get_bq_estimate(loc, scale, observations):
+      def get_bq_estimate(loc, scale, observations, prior_samples_per_proposal):
 
-          # print("proposal / bq prior>>", loc, scale)
-          bq_prior = Gaussian(mean=loc.squeeze(), covariance=scale.squeeze()**2)
-          initial_x = bq_prior.sample(1)  # 1 sample from each proposal distribution in the batch
+          sess = tf.Session()
+          with sess.as_default():
+              bq_prior = tfd.MultivariateNormalDiag(loc, scale)
+              initial_x = bq_prior.sample(prior_samples_per_proposal)
+              # initial_x = tf.concat(tf.unstack(initial_x, axis=0), axis=0)
+              initial_x = sess.run(initial_x)   # [prior_samples_per_proposal, batch_size, latent_dim]
 
-          # initial_y = []
-          # for point in initial_x:
-          #     initial_y.append(get_log_joint(np.atleast_2d(point), observations))
-          # initial_y = np.concatenate(initial_y)
-
-          # print("obs", observations)
-
-          initial_y = get_log_joint(np.atleast_2d(initial_x), observations)
-          # print("initial_y", initial_y.shape, initial_y)
+          initial_y = get_log_joint(initial_x, observations)
 
           mean_function = NegativeQuadratic(FLAGS.latent_dim)
-          initial_x = np.expand_dims(initial_x, 1)
 
-          # print("x", type(initial_x), initial_x.shape)
-          # print("y", type(initial_y), initial_y.shape)
+
           gpy_gp = GPy.core.GP(initial_x, initial_y, kernel=kernel, likelihood=bq_likelihood, mean_function=mean_function)
           warped_gp = VanillaGP(gpy_gp)
-          # bq_model = IntegrandModel(warped_gp, bq_prior)
-
-          # for i in range(10):
-          #     if i % 5 == 0:
-          #         gpy_gp.optimize_restarts(num_restarts=5)
-          #     failed = True
-          #     while failed:
-          #         try:
-          #             batch = select_batch(bq_model, 1, KRIGING_BELIEVER)
-          #             failed = False
-          #         except FloatingPointError:
-          #             gpy_gp.optimize_restarts(num_restarts=5)
-          #
-          #     X = np.array(batch)
-          #     Y = get_log_joint(X)
-          #
-          #     bq_model.update(batch, Y)
 
           gpy_gp.optimize_restarts(num_restarts=5, verbose=False)
 
           return gpy_gp.mean_function.mu, gpy_gp.mean_function.m_0, gpy_gp.mean_function.omega, gpy_gp.kern.lengthscale.values[0], gpy_gp.kern.variance.values[0], gpy_gp.X, warped_gp.underlying_gp.K_inv_Y
 
-
-      mu, m_0, omega, kernel_lengthscale, kernel_variance, gp_X, K_inv_Y = tf.py_func(get_bq_estimate, [proposal._loc, proposal._scale, observations], [tf.float64, tf.float64, tf.float64, tf.float64, tf.float64, tf.float64, tf.float64])
-      # mu, m_0, omega, kernel_lengthscale, kernel_variance, gp_X, K_inv_Y = get_bq_estimate(proposal._loc, proposal._scale)
-
-      # latent_dim = 1
+      prior_gp_samples_per_proposal = 1
+      mu, m_0, omega, kernel_lengthscale, kernel_variance, gp_X, K_inv_Y = tf.py_func(get_bq_estimate, [proposal._loc, proposal._scale, observations, prior_gp_samples_per_proposal], [tf.float64, tf.float64, tf.float64, tf.float64, tf.float64, tf.float64, tf.float64])
 
       # Need to set shapes explicitly because these variables come out of py_func, and TF can't infer their shapes
       omega.set_shape((FLAGS.latent_dim))
       mu.set_shape((FLAGS.latent_dim))
-      m_0.set_shape(())
+      m_0.set_shape(())  # (constant) maximum value of the quadratic mean function
+      kernel_lengthscale = tf.cast(kernel_lengthscale, tf.float32)
+      kernel_lengthscale.set_shape(())  # (constant)
 
-      dimensions = FLAGS.latent_dim  # which dimensions?? latent dimensions?
+      kernel_variance = tf.cast(kernel_variance, tf.float32)
+      kernel_variance.set_shape(())
 
-      # mu is latent_dim-dimensional, proposal._loc is (latent_dim x batch_size)-dimensional
-      mu_diff = proposal._loc - tf.expand_dims(tf.cast(mu, tf.float32), 1)
+      gp_X = tf.cast(gp_X, tf.float32)
+      # gp_X.set_shape((batch_size, FLAGS.latent_dim)) # [number of GP samples, latent_dim]   # # Delete if taking more than 1 point per proposal :)
+
+      K_inv_Y = tf.cast(K_inv_Y, tf.float32)
+      # K_inv_Y.set_shape((total_number_of_gp_points,))  #
+
+      # mu is [latent_dim], proposal._loc is [batch_size, latent_dim]-dimensional
+      mu_diff = proposal._loc - tf.cast(mu, tf.float32)  # [batch_size, latent_dim]
 
       Lambda = tf.diag(omega ** -2)  # omega is latent_dim-dimensional
-      Lambda = tf.cast(Lambda, tf.float32)  # latent_dim x latent_dim
+      Lambda = tf.cast(Lambda, tf.float32)  # [latent_dim, latent_dim]
 
       print("mu diff", mu_diff)  # batch_size x latent_dim
-      print("scale", proposal._scale)  # (batch_size.latent_dim x batch_size.latent_dim) block-diagonal matrix...
-      # should be batch_size x latent_dim x latent_dim
-      # (batch_size blocks of size latent_dim x latent_dim)
+      print("scale", proposal._scale)  # [batch_size, latent_dim]
 
-
-      # hacked_proposal_scale = tf.reshape(tf.diag_part(proposal._scale), (-1, 1, 1))  # this does the right thing iff latent_dim is 1...
-      # hacked_proposal_scale = tf.reshape(proposal._scale, (batch_size, FLAGS.latent_dim))  # this is [batch_size, latent_dim]
-      # inner thing wants to be batch_size x latent_dim x latent_dim, result wants to be (batch_size,)
-      # inner_qfe1 = tf.tensordot(hacked_proposal_scale**2, Lambda, [[2],[0]])
-
+      # shape: [batch_size,]
       quadratic_form_expectation1 = tf.reshape(tf.matmul(tf.reshape(tf.cast(omega, tf.float32), (1, FLAGS.latent_dim)), tf.transpose(proposal._scale)), (batch_size,) )
-      # quadratic_form_expectation1 = tf.trace(inner_qfe1)  # shape: [batch_size,]
 
-      quadratic_form_expectation2_1 = tf.tensordot(mu_diff, Lambda, [[1],[0]])  # (batch_size x latent_dim)
-      quadratic_form_expectation2 = tf.einsum('ij,ij->i', quadratic_form_expectation2_1, mu_diff)  # (batch_size)
+      quadratic_form_expectation2_1 = mu_diff @ Lambda # [batch_size, latent_dim]
+      quadratic_form_expectation2 = tf.reduce_sum((quadratic_form_expectation2_1 * mu_diff), 1)   # [batch_size, ]
 
-      quadratic_form_expectation = quadratic_form_expectation1 + quadratic_form_expectation2
+      quadratic_form_expectation = quadratic_form_expectation1 + quadratic_form_expectation2      # [batch_size, ]
 
-      prior_mean_integral = (tf.cast(m_0, tf.float32) - 0.5 * quadratic_form_expectation)  # (batch_size)
+      prior_mean_integral = (tf.cast(m_0, tf.float32) - 0.5 * quadratic_form_expectation)  # [batch_size, ]
 
-      kernel_normalising_constant = (2 * np.pi * tf.cast(kernel_lengthscale, tf.float32)) ** dimensions / 2
+      # this only depends on the learned kernel. i.e. is a scalar for each proposal
+      kernel_normalising_constant = (2 * np.pi * kernel_lengthscale) ** (FLAGS.latent_dim / 2.)  #  (constant)
 
-      cov_matrix = tf.expand_dims(tf.cast(kernel_lengthscale, tf.float32) * tf.eye(dimensions), 0) + hacked_proposal_scale**2  # (batch_size x latent_dim x latent_dim)
+      # proposal._scale is [batch_size, latent_dim] and kernel_lengthscale (constant)
+      scale_matrix = tf.math.sqrt( kernel_lengthscale**2 + proposal._scale**2 )  # [batch_size, latent_dim]
 
-      multivariate_normal = tfp.distributions.MultivariateNormalFullCovariance(loc=proposal._loc,
-                                                                               covariance_matrix=cov_matrix)
+      multivariate_normal = tfd.MultivariateNormalDiag(loc=proposal._loc, scale_diag=scale_matrix )  # batch_size many multivariate normals, each latent dimensional
 
-      # gp_X is num_gp_points x latent_dim
-      # TODO Make this its own function
-      int_k_pi = tf.cast(kernel_variance, tf.float32) \
-                 * kernel_normalising_constant \
-                 * multivariate_normal.prob(tf.cast(tf.reshape(gp_X, (-1, 1, 1)), tf.float32))
+      C = kernel_variance * kernel_normalising_constant   # (constant)
 
-      int_k_pi = tf.transpose(int_k_pi)
+      # we want the prob of each sample under each proposal,
+
+      prob = multivariate_normal.prob(tf.expand_dims(gp_X, axis=1))  # [number_of_gp_points, batch_size]
+      int_k_pi = C * prob  # [number_of_gp_points, batch_size]
+      int_k_pi = tf.transpose(int_k_pi)   # [batch_size, total_number_of_gp_point]
+
       #  ... we have batch_size many normals, and batch_size many points in latent_dim space...
       # for each normal, we want the integral considering all points...
       # int_k_pi should be batch_size x num_gp_points, and K_inv_Y should be (num_gp_points)
 
-      integral_mean = tf.transpose(int_k_pi @ tf.cast(K_inv_Y, tf.float32))
+      integral_mean = int_k_pi @ K_inv_Y  # [batch_size, ]  (dream away)
 
-      bq_elbo = integral_mean + prior_mean_integral + tf.diag_part(proposal.entropy())
+      bq_elbo = integral_mean + prior_mean_integral + tf.reduce_sum( proposal.entropy(), axis=1)
       bq_elbo = tf.reduce_mean(bq_elbo)
-      bq_loss = bq_elbo
+      bq_loss = - bq_elbo
 
       estimators['bq'] = (log_avg_weight, log_avg_weight, bq_loss)
 
