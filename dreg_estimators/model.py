@@ -449,59 +449,59 @@ def iwae(p_z,           # prior
           sess = tf.Session()
           with sess.as_default():
               bq_prior = tfd.MultivariateNormalDiag(loc, scale)
+
+              mean_function = NegativeQuadratic(input_dim=FLAGS.latent_dim, output_dim=FLAGS.latent_dim)
+
               initial_x = bq_prior.sample(prior_samples_per_proposal)
-              # initial_x = tf.concat(tf.unstack(initial_x, axis=0), axis=0)
-              initial_x = sess.run(initial_x)   # [prior_samples_per_proposal, batch_size, latent_dim]
+              initial_x = sess.run(initial_x)                                      # [prior_samples_per_proposal, batch_size, latent_dim]
+              initial_y = get_log_joint(initial_x, observations)                   # [prior_samples_per_proposal, batch_size, latent_dim]
 
-          initial_y = get_log_joint(initial_x, observations)
+              reshape_x = tf.concat(tf.unstack(initial_x, axis=0), axis=0).eval()  # converts to [prior_samples_per_proposal * batch_size, latent_dim] numpy
+              reshape_y = tf.concat(tf.unstack(initial_y, axis=0), axis=0).eval()  # converts to [prior_samples_per_proposal * batch_size, latent_dim] numpy
 
-          mean_function = NegativeQuadratic(FLAGS.latent_dim)
-
-
-          gpy_gp = GPy.core.GP(initial_x, initial_y, kernel=kernel, likelihood=bq_likelihood, mean_function=mean_function)
-          warped_gp = VanillaGP(gpy_gp)
-
-          gpy_gp.optimize_restarts(num_restarts=5, verbose=False)
+              gpy_gp = GPy.core.GP(reshape_x, reshape_y, kernel=kernel, likelihood=bq_likelihood, mean_function=mean_function)
+              warped_gp = VanillaGP(gpy_gp)
+              gpy_gp.optimize_restarts(num_restarts=5, verbose=False)
 
           return gpy_gp.mean_function.mu, gpy_gp.mean_function.m_0, gpy_gp.mean_function.omega, gpy_gp.kern.lengthscale.values[0], gpy_gp.kern.variance.values[0], gpy_gp.X, warped_gp.underlying_gp.K_inv_Y
 
       prior_gp_samples_per_proposal = 1
       mu, m_0, omega, kernel_lengthscale, kernel_variance, gp_X, K_inv_Y = tf.py_func(get_bq_estimate, [proposal._loc, proposal._scale, observations, prior_gp_samples_per_proposal], [tf.float64, tf.float64, tf.float64, tf.float64, tf.float64, tf.float64, tf.float64])
 
+      # Need to set tyoe explicitly because these variables are expected double (even if I change the line above)
+      mu = tf.cast(mu, tf.float32)
+      m_0 = tf.cast(m_0, tf.float32)
+      omega = tf.cast(omega, tf.float32)
+      kernel_lengthscale = tf.cast(kernel_lengthscale, tf.float32)
+      kernel_variance = tf.cast(kernel_variance, tf.float32)
+      gp_X = tf.cast(gp_X, tf.float32)
+      K_inv_Y = tf.cast(K_inv_Y, tf.float32)
+
       # Need to set shapes explicitly because these variables come out of py_func, and TF can't infer their shapes
       omega.set_shape((FLAGS.latent_dim))
       mu.set_shape((FLAGS.latent_dim))
       m_0.set_shape(())  # (constant) maximum value of the quadratic mean function
-      kernel_lengthscale = tf.cast(kernel_lengthscale, tf.float32)
       kernel_lengthscale.set_shape(())  # (constant)
-
-      kernel_variance = tf.cast(kernel_variance, tf.float32)
       kernel_variance.set_shape(())
-
-      gp_X = tf.cast(gp_X, tf.float32)
-      # gp_X.set_shape((batch_size, FLAGS.latent_dim)) # [number of GP samples, latent_dim]   # # Delete if taking more than 1 point per proposal :)
-
-      K_inv_Y = tf.cast(K_inv_Y, tf.float32)
-      # K_inv_Y.set_shape((total_number_of_gp_points,))  #
+      gp_X.set_shape((256, FLAGS.latent_dim)) # [number of GP samples, latent_dim]   # # Delete if taking more than 1 point per proposal :)
+      K_inv_Y.set_shape((256,))  #
 
       # mu is [latent_dim], proposal._loc is [batch_size, latent_dim]-dimensional
-      mu_diff = proposal._loc - tf.cast(mu, tf.float32)  # [batch_size, latent_dim]
-
+      mu_diff = proposal._loc - mu  # [batch_size, latent_dim]
       Lambda = tf.diag(omega ** -2)  # omega is latent_dim-dimensional
-      Lambda = tf.cast(Lambda, tf.float32)  # [latent_dim, latent_dim]
 
       print("mu diff", mu_diff)  # batch_size x latent_dim
       print("scale", proposal._scale)  # [batch_size, latent_dim]
 
       # shape: [batch_size,]
-      quadratic_form_expectation1 = tf.reshape(tf.matmul(tf.reshape(tf.cast(omega, tf.float32), (1, FLAGS.latent_dim)), tf.transpose(proposal._scale)), (batch_size,) )
+      quadratic_form_expectation1 = tf.reshape(tf.matmul(tf.reshape(omega, (1, FLAGS.latent_dim)), tf.transpose(proposal._scale)), (batch_size,) )
 
       quadratic_form_expectation2_1 = mu_diff @ Lambda # [batch_size, latent_dim]
       quadratic_form_expectation2 = tf.reduce_sum((quadratic_form_expectation2_1 * mu_diff), 1)   # [batch_size, ]
 
       quadratic_form_expectation = quadratic_form_expectation1 + quadratic_form_expectation2      # [batch_size, ]
 
-      prior_mean_integral = (tf.cast(m_0, tf.float32) - 0.5 * quadratic_form_expectation)  # [batch_size, ]
+      prior_mean_integral = (m_0 - (0.5 * quadratic_form_expectation))  # [batch_size, ]
 
       # this only depends on the learned kernel. i.e. is a scalar for each proposal
       kernel_normalising_constant = (2 * np.pi * kernel_lengthscale) ** (FLAGS.latent_dim / 2.)  #  (constant)
@@ -514,8 +514,10 @@ def iwae(p_z,           # prior
       C = kernel_variance * kernel_normalising_constant   # (constant)
 
       # we want the prob of each sample under each proposal,
+      expanded_gp_X = tf.expand_dims(gp_X, axis=1)
 
-      prob = multivariate_normal.prob(tf.expand_dims(gp_X, axis=1))  # [number_of_gp_points, batch_size]
+      prob = multivariate_normal.prob(expanded_gp_X)  # [number_of_gp_points, batch_size]
+
       int_k_pi = C * prob  # [number_of_gp_points, batch_size]
       int_k_pi = tf.transpose(int_k_pi)   # [batch_size, total_number_of_gp_point]
 
@@ -523,9 +525,16 @@ def iwae(p_z,           # prior
       # for each normal, we want the integral considering all points...
       # int_k_pi should be batch_size x num_gp_points, and K_inv_Y should be (num_gp_points)
 
-      integral_mean = int_k_pi @ K_inv_Y  # [batch_size, ]  (dream away)
+      # matmul (?, #GP_points) x (#GP_points, 1) => [batch_size, 1]
+      integral_mean = int_k_pi @ tf.expand_dims(K_inv_Y, axis=1)  # [batch_size, 1]
 
-      bq_elbo = integral_mean + prior_mean_integral + tf.reduce_sum( proposal.entropy(), axis=1)
+      entropy = tf.reduce_sum(proposal.entropy(), axis=1)
+      print("ent: ", entropy.shape, entropy)
+
+      a = tf.reduce_sum(integral_mean + tf.expand_dims(prior_mean_integral, axis=1), axis=1)  # [batch_size, ]
+      print("a: ", a.shape, a)
+
+      bq_elbo = a + entropy
       bq_elbo = tf.reduce_mean(bq_elbo)
       bq_loss = - bq_elbo
 
