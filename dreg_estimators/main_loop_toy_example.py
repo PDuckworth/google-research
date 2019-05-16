@@ -123,7 +123,7 @@ def main(unused_argv):
         observations_ph,
         FLAGS.num_samples, [], # [alpha, beta, gamma, delta],
         contexts=None,
-        debug=True)
+        debug=False)
 
     # actual_proposal = proposal(observations_ph)
 
@@ -245,10 +245,11 @@ def main(unused_argv):
 
         random.shuffle(indices)
 
-        for i in range(0, train_xs.shape[0], FLAGS.batch_size):
+        for cnt, i in enumerate(range(0, train_xs.shape[0], FLAGS.batch_size)):
           if sess.should_stop() or cur_step > FLAGS.max_steps:
             break
 
+          print("epoch: ", n_epoch, " . batch no:", cnt)
           # Get a batch, then dynamically binarize
           ns = indices[i:i + FLAGS.batch_size]
           # batch_xs = utils.binarize_batch_xs(train_xs[ns])
@@ -269,6 +270,6 @@ def main(unused_argv):
 
 if __name__ == "__main__":
     ## FORCE TO USE THE CPU:
-    os.environ['CUDA_VISIBLE_DEVICES'] = ""
+    # os.environ['CUDA_VISIBLE_DEVICES'] = ""
 
     tf.app.run(main)

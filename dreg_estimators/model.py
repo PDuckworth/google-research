@@ -432,7 +432,6 @@ def iwae(p_z,           # prior
               if debug: print("like", likelihood, likelihood._loc, likelihood._scale)
 
               transpose_obs = tf.transpose(observations)
-              print("transpose_obs ", transpose_obs.shape)
               log_prob = likelihood.log_prob(observations)
 
               if debug: print("logprob", log_prob)
@@ -483,8 +482,8 @@ def iwae(p_z,           # prior
       m_0.set_shape(())  # (constant) maximum value of the quadratic mean function
       kernel_lengthscale.set_shape(())  # (constant)
       kernel_variance.set_shape(())
-      gp_X.set_shape((256, FLAGS.latent_dim)) # [number of GP samples, latent_dim]   # # Delete if taking more than 1 point per proposal :)
-      K_inv_Y.set_shape((256,))  #
+      # gp_X.set_shape((256, FLAGS.latent_dim)) # [number of GP samples, latent_dim]   # # Delete if taking more than 1 point per proposal :)
+      # K_inv_Y.set_shape((256, FLAGS.latent_dim))  #
 
       # mu is [latent_dim], proposal._loc is [batch_size, latent_dim]-dimensional
       mu_diff = proposal._loc - mu  # [batch_size, latent_dim]
@@ -525,16 +524,13 @@ def iwae(p_z,           # prior
       # for each normal, we want the integral considering all points...
       # int_k_pi should be batch_size x num_gp_points, and K_inv_Y should be (num_gp_points)
 
-      # matmul (?, #GP_points) x (#GP_points, 1) => [batch_size, 1]
-      integral_mean = int_k_pi @ tf.expand_dims(K_inv_Y, axis=1)  # [batch_size, 1]
+      # matrix mul (?, #GP_points) x (#GP_points, latent_dim) => [batch_size, latent_dim]
+      integral_mean = tf.reduce_sum(int_k_pi @ K_inv_Y, axis=1) # [batch_size, ]
 
       entropy = tf.reduce_sum(proposal.entropy(), axis=1)
-      print("ent: ", entropy.shape, entropy)
 
-      a = tf.reduce_sum(integral_mean + tf.expand_dims(prior_mean_integral, axis=1), axis=1)  # [batch_size, ]
-      print("a: ", a.shape, a)
-
-      bq_elbo = a + entropy
+      integral = tf.reduce_sum(integral_mean + tf.expand_dims(prior_mean_integral, axis=1), axis=1)  # [batch_size, ]
+      bq_elbo = integral + entropy
       bq_elbo = tf.reduce_mean(bq_elbo)
       bq_loss = - bq_elbo
 
