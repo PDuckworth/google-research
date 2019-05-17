@@ -136,7 +136,7 @@ def main(unused_argv):
     if FLAGS.estimator == "bq":
         _, _, inference_loss = estimators['bq']
         tf.summary.scalar("ELBOs/bq_train", inference_loss)
-        tf.summary.scalar("ELBOs/iwae", tf.reduce_mean(estimators["iwae"][0]))
+        tf.summary.scalar("ELBOs/iwae loss", -tf.reduce_mean(estimators["iwae"][2]))
     else:
         inference_loss = -tf.reduce_mean(neg_inference_loss)
 
