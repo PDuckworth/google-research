@@ -33,7 +33,7 @@ flags = tf.flags
 
 flags.DEFINE_enum("estimator", "iwae", [
     "iwae", "rws", "stl", "dreg", "dreg-cv", "rws-dreg", "rws-dreg-norm",
-    "dreg-norm", "jk", "jk-dreg", "dreg-alpha"
+    "dreg-norm", "jk", "jk-dreg", "dreg-alpha", "bq"
 ], "Estimator type to use.")
 flags.DEFINE_float("alpha", 0.9, "Weighting for DReG(alpha)")
 flags.DEFINE_integer("batch_size", 32, "The batch size.")
@@ -95,6 +95,7 @@ def main(unused_argv):
   likelihood_hidden_dims = FLAGS.hidden_layers*[FLAGS.hidden_dims]
 
   with tf.Graph().as_default():
+
     alpha = tf.Variable(0.0, name="alpha_cv")
     beta = tf.Variable(0.0, name="beta_cv")
     gamma = tf.Variable(0.0, name="gamma_cv")
@@ -168,14 +169,21 @@ def main(unused_argv):
         proposal,
         observations,
         FLAGS.num_samples, [alpha, beta, gamma, delta],
-        contexts=contexts)
+        contexts=contexts,
+        debug=True)
 
     # things we are interested in
     log_p_hat, neg_model_loss, neg_inference_loss = estimators[FLAGS.estimator]
 
     model_loss = -tf.reduce_mean(neg_model_loss)
-    inference_loss = -tf.reduce_mean(neg_inference_loss)
     log_p_hat_mean = tf.reduce_mean(log_p_hat)
+
+    if FLAGS.estimator == "bq":
+        _, _, inference_loss = estimators['bq']
+        tf.summary.scalar("ELBOs/bq_train", inference_loss)
+        tf.summary.scalar("ELBOs/iwae loss", -tf.reduce_mean(estimators["iwae"][2]))
+    else:
+        inference_loss = -tf.reduce_mean(neg_inference_loss)
 
     model_params = get_model_params()
     inference_network_params = proposal.fcnet.get_variables()
@@ -183,9 +191,9 @@ def main(unused_argv):
     # Compute and apply the gradients, summarizing the gradient variance.
     global_step = tf.train.get_or_create_global_step()
     opt = tf.train.AdamOptimizer(FLAGS.learning_rate)
+
     model_grads = opt.compute_gradients(model_loss, var_list=model_params)
-    inference_grads = opt.compute_gradients(
-        inference_loss, var_list=inference_network_params)
+    inference_grads = opt.compute_gradients(inference_loss, var_list=inference_network_params)
 
     # If we're using control variates, add gradients for these too.
     if "cv" in FLAGS.estimator:
@@ -243,7 +251,7 @@ def main(unused_argv):
       tf.summary.scalar("inference_grad_snr_sq/%s" % FLAGS.estimator, inference_grad_snr_sq)
 
     tf.summary.scalar("log_p_hat/train", log_p_hat_mean)
-    tf.summary.scalar("estimators/elbo", estimators["elbo"]) # I added this - why does it not match log_p_hat?
+    tf.summary.scalar("estimators/elbo", estimators["elbo"])
     # tf.summary.scalar("estimators/difference", estimators["elbo"]-log_p_hat_mean)
 
     # Define an op to compute the paired t statistic (for bias checking)

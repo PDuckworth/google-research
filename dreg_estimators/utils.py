@@ -28,6 +28,7 @@ from numpy import newaxis
 import tensorflow_probability as tfp
 import model
 
+from sklearn import preprocessing
 tfd = tfp.distributions
 
 flags = tf.flags
@@ -136,7 +137,7 @@ def load_toy_data(datapoints = 200, dim=1):
 
   TRUE_MEAN = 2
   TRUE_SCALE = 1
-  NUM_DATA_POINTS = 10240
+  NUM_DATA_POINTS = 1024
 
   INPUT_DATA_DIM = FLAGS.latent_dim  # this is required, because the likelihood function is just the identity
 
@@ -149,6 +150,10 @@ def load_toy_data(datapoints = 200, dim=1):
   # Create fake data points using a np distribution
   np.random.seed(SEED)
   data = np.random.normal(loc=TRUE_MEAN, scale=TRUE_SCALE, size=(NUM_DATA_POINTS*2, INPUT_DATA_DIM)).astype(np.float32)
+
+  # normalise the data - see what happens to the parameters.
+  scaler = preprocessing.StandardScaler()
+  data = scaler.fit_transform(data)
 
   # Add a new axis so that tf can evaluate the log probability at each data point for many parameter values.
   train_xs = data[:NUM_DATA_POINTS]
@@ -169,6 +174,7 @@ def main(unused_argv):
     train_xs, valid_xs, test_xs = load_toy_data()
 
 if __name__ == "__main__":
+  os.environ['CUDA_VISIBLE_DEVICES'] = ""
   tf.app.run(main)
 
 

@@ -98,7 +98,7 @@ def create_logging_hook(metrics):
 def main(unused_argv):
   # proposal_hidden_dims = [20]
   # likelihood_hidden_dims = [0]
-  with tf.Graph().as_default():
+
     if FLAGS.dataset in ["mnist", "struct_mnist"]:
       train_xs, valid_xs, test_xs = utils.load_mnist()
     elif FLAGS.dataset == "omniglot":
@@ -110,7 +110,10 @@ def main(unused_argv):
 
     # Placeholder for input mnist digits.
     # observations_ph = tf.placeholder("float32", [None, 2])
-    observations_ph = tf.placeholder("float32", [None, FLAGS.latent_dim])  # This model requires latent_dim == input data shape
+
+
+    with tf.name_scope("input_batch") as scope:
+        observations_ph = tf.placeholder("float32", [None, FLAGS.latent_dim])  # This model requires latent_dim == input data shape
 
     # set up your prior dist, proposal and likelihood networks
     (prior, likelihood, proposal) = model.get_toy_models(train_xs, which_example="toy1D")
@@ -126,42 +129,49 @@ def main(unused_argv):
         debug=False)
 
     # actual_proposal = proposal(observations_ph)
-
     print("VARS: ", proposal.fcnet.get_variables())
-    log_p_hat, neg_model_loss, neg_inference_loss = estimators[FLAGS.estimator]
 
-    model_loss = -tf.reduce_mean(neg_model_loss)
-    log_p_hat_mean = tf.reduce_mean(log_p_hat)
 
-    if FLAGS.estimator == "bq":
-        _, _, inference_loss = estimators['bq']
-        tf.summary.scalar("ELBOs/bq_train", inference_loss)
-        tf.summary.scalar("ELBOs/iwae loss", -tf.reduce_mean(estimators["iwae"][2]))
-    else:
-        inference_loss = -tf.reduce_mean(neg_inference_loss)
 
-    model_params = prior.get_parameter_mu()
-    inference_params = proposal.fcnet.get_variables()
+    with tf.name_scope('losses') as scope:
+      if FLAGS.estimator == "bq":
+          log_p_hat, neg_model_loss, inference_loss, kernel_lengthscale = estimators['bq']
 
-    # Compute and apply the gradients, summarizing the gradient variance.
-    global_step = tf.train.get_or_create_global_step()
-    opt = tf.train.AdamOptimizer(FLAGS.learning_rate)
+          tf.summary.scalar("BQ/kern_length_scale", kernel_lengthscale[0])
+          tf.summary.histogram("BQ/kern_length_scale", kernel_lengthscale)
+          tf.summary.scalar("ELBOs/bq_train", inference_loss)
+          tf.summary.scalar("ELBOs/iwae loss", -tf.reduce_mean(estimators["iwae"][2]))
+      else:
+          log_p_hat, neg_model_loss, neg_inference_loss = estimators[FLAGS.estimator]
+          inference_loss = -tf.reduce_mean(neg_inference_loss)
 
-    cv_grads = []
+      model_loss = -tf.reduce_mean(neg_model_loss)
+      log_p_hat_mean = tf.reduce_mean(log_p_hat)
 
-    model_grads = opt.compute_gradients(model_loss, var_list=(model_params))
-    # inference model (encoder) params are just A and b. (Ax+b)
-    inference_grads = opt.compute_gradients(inference_loss, var_list=inference_params)
 
-    grads = model_grads + inference_grads #+ cv_grads
+    with tf.name_scope('gradients') as scope:
+      model_params = prior.get_parameter_mu()
+      inference_params = proposal.fcnet.get_variables()
 
-    model_ema_op, model_grad_variance, _ = (utils.summarize_grads(model_grads))
-    inference_ema_op, inference_grad_variance, inference_grad_snr_sq = (utils.summarize_grads(inference_grads))
+      # Compute and apply the gradients, summarizing the gradient variance.
+      global_step = tf.train.get_or_create_global_step()
+      opt = tf.train.AdamOptimizer(FLAGS.learning_rate)
 
-    ema_ops = [model_ema_op, inference_ema_op]
+      cv_grads = []
 
-    # this ensures you evaluate ema_ops before the apply_gradient function :)
-    with tf.control_dependencies(ema_ops):
+      model_grads = opt.compute_gradients(model_loss, var_list=(model_params))
+      # inference model (encoder) params are just A and b. (Ax+b)
+      inference_grads = opt.compute_gradients(inference_loss, var_list=inference_params)
+
+      grads = model_grads + inference_grads #+ cv_grads
+
+      model_ema_op, model_grad_variance, _ = (utils.summarize_grads(model_grads))
+      inference_ema_op, inference_grad_variance, inference_grad_snr_sq = (utils.summarize_grads(inference_grads))
+
+      ema_ops = [model_ema_op, inference_ema_op]
+
+      # this ensures you evaluate ema_ops before the apply_gradient function :)
+      with tf.control_dependencies(ema_ops):
         train_op = opt.apply_gradients(grads, global_step=global_step)
 
 
@@ -191,6 +201,10 @@ def main(unused_argv):
       tf.gfile.Copy(
           os.path.join(FLAGS.initial_checkpoint_dir, f),
           os.path.join(checkpoint_dir, f))
+
+
+    # init = tf.initialize_all_variables()
+
 
     with tf.train.MonitoredTrainingSession(
         is_chief=True,
