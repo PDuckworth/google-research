@@ -519,7 +519,7 @@ def iwae(p_z,           # prior
           print("scale", proposal._scale)  # [batch_size, latent_dim]
 
           # shape: [batch_size,]
-          quadratic_form_expectation1 = tf.reshape( tf.expand_dims(omega, axis=0) @ tf.transpose(proposal._scale), (batch_size,) )
+          quadratic_form_expectation1 = tf.reshape(tf.expand_dims(omega ** -2, axis=0) @ tf.transpose(proposal._scale ** 2), (batch_size,) )
           # quadratic_form_expectation1 = tf.reshape( proposal._scale @ tf.expand_dims(omega,1),   (batch_size,) )
 
           quadratic_form_expectation2_1 = mu_diff @ Lambda  # [batch_size, latent_dim]
@@ -530,7 +530,7 @@ def iwae(p_z,           # prior
           prior_mean_integral = (m_0 - (0.5 * quadratic_form_expectation))  # [batch_size, ]
 
           # this only depends on the learned kernel. i.e. is a scalar for each proposal
-          kernel_normalising_constant = (2 * np.pi * kernel_lengthscale) ** (FLAGS.latent_dim / 2.)  #  (latent_dim, )
+          kernel_normalising_constant = (2 * np.pi * kernel_lengthscale ** 2) ** (FLAGS.latent_dim / 2.)  #  (latent_dim, )
 
           # proposal._scale is [batch_size, latent_dim] and kernel_lengthscale (latent_dim)
           scale_matrix = tf.math.sqrt( kernel_lengthscale**2 + proposal._scale**2 )  # [batch_size, latent_dim]
