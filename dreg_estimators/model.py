@@ -530,7 +530,7 @@ def iwae(p_z,           # prior
           prior_mean_integral = (m_0 - (0.5 * quadratic_form_expectation))  # [batch_size, ]
 
           # this only depends on the learned kernel. i.e. is a scalar for each proposal
-          kernel_normalising_constant = (2 * np.pi * kernel_lengthscale ** 2) ** (FLAGS.latent_dim / 2.)  #  (latent_dim, )
+          kernel_normalising_constant = ((2 * np.pi) ** (FLAGS.latent_dim / 2.)) * np.prod(kernel_lengthscale)  #  (latent_dim, )
 
           # proposal._scale is [batch_size, latent_dim] and kernel_lengthscale (latent_dim)
           scale_matrix = tf.math.sqrt( kernel_lengthscale**2 + proposal._scale**2 )  # [batch_size, latent_dim]
@@ -538,7 +538,7 @@ def iwae(p_z,           # prior
           multivariate_normal = tfd.MultivariateNormalDiag(loc=proposal._loc, scale_diag=scale_matrix )  # batch_size many multivariate normals, each latent dimensional
 
           # take the expectation of the length_scales (over the latent dimensions)
-          C = kernel_variance * tf.math.reduce_mean(kernel_normalising_constant)  # (constant)
+          C = kernel_variance * kernel_normalising_constant  # (constant)
 
           # we want the prob of each sample under each proposal,
           expanded_gp_X = tf.expand_dims(gp_X, axis=1)
