@@ -530,7 +530,7 @@ def iwae(p_z,           # prior
           prior_mean_integral = (m_0 - (0.5 * quadratic_form_expectation))  # [batch_size, ]
 
           # this only depends on the learned kernel. i.e. is a scalar for each proposal
-          kernel_normalising_constant = ((2 * np.pi) ** (FLAGS.latent_dim / 2.)) * np.prod(kernel_lengthscale)  #  (latent_dim, )
+          kernel_normalising_constant = ((2 * np.pi) ** (FLAGS.latent_dim / 2.)) * tf.reduce_prod(kernel_lengthscale)  #  (latent_dim, )
 
           # proposal._scale is [batch_size, latent_dim] and kernel_lengthscale (latent_dim)
           scale_matrix = tf.math.sqrt( kernel_lengthscale**2 + proposal._scale**2 )  # [batch_size, latent_dim]
